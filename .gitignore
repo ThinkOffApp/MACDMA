@@ -1,0 +1,28 @@
+# Generated output and local environments
+/build/
+/results/
+/local/
+/.private/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.DS_Store
+# Credentials and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+# SDKs, kernels and generated driver bundles
+*.kext/
+*.dext/
+*.app/
+*.dmg
+*.pkg
+*.o
+*.a
+*.dylib
+*.so
