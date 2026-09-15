@@ -57,6 +57,24 @@ Point your agent at [AGENTS.md](AGENTS.md), or paste this prompt:
 
 The agent can prepare the software and checks; Recovery security changes and macOS approval may still require you at the Mac. This workflow and the manual steps below use the same installation guide.
 
+### The `mcdma` command
+
+[`cli/`](cli/README.md) holds **mcdma**, a command-line tool over the same
+checks and steps. It discovers the ConnectX card and its enclosure, the driver
+state, the Sparks and the cabling, then runs the remaining steps in order
+(driver install and approval, wiring detection by real RDMA transfers,
+addresses and neighbours persisted on both ends, transfer tests with latency)
+and can stream a per-link throughput monitor. `mcdma status --json` exposes all
+of it to scripts.
+
+```sh
+cd cli && node bin/mcdma.js status      # or: npm install -g .  then  mcdma enable
+```
+
+The manual steps below and the scripts in `tools/` remain the validated route;
+`mcdma` automates them but its driver-install path has not yet had a
+fresh-machine hardware check.
+
 ### 1. Clone and check prerequisites
 
 Clone the repository:

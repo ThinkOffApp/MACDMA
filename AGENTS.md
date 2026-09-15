@@ -58,6 +58,10 @@ Say whether the outcome is preparation only, installed, loaded, port active, byt
 
 Record private setup details and raw logs under ignored `local/` or `results/`, never in tracked documentation. Raw test output can contain hostnames, memory-region addresses and access keys. Do not publish it without a separate review.
 
+## The mcdma command
+
+`cli/` contains `mcdma`, a Node command-line tool over one engine (`cli/lib/engine.js`). `mcdma status --json` reports the seven setup checks, discovered hardware, driver state, Sparks, topology and link state; `mcdma enable` runs the remaining steps and exits 3 when the owner must approve the driver or restart. It reads the same registry, `kmutil`, `ibv_devinfo`, `ifconfig` and `ndp` sources listed above and probes Sparks over ssh. Its driver installation route has not had a fresh-machine hardware check; prefer `tools/install-native.sh` for the validated route and treat `mcdma driver install` as beta. `mcdma --demo` uses fictional identities and never writes the settings file.
+
 ## Changes and publication
 
 Keep the repository focused on the driver, build/setup tools and validation. Retain the original source provenance and Apache-2.0 license. Do not incorporate MelonDMA code or erase third-party attribution. Preserve tests for resource lifetime, DMA isolation, completion correctness and timeout behavior when optimizing.
