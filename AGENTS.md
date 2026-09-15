@@ -46,6 +46,12 @@ Stop RDMA jobs and follow the guide's shutdown/disconnection steps before changi
 4. Run four-way byte-verifying tests in kernel mode, then direct mode, then BlueFlame-64 mode, using the explicit arguments in `docs/install.md`. Require the runner's success result and requested mode markers. Stop and preserve the error if transfer, completion, cleanup or identity checks fail.
 5. Only after correctness passes, and if the user requested performance testing, use the README's latency command for both initiators, with fresh output filenames, 1 KiB and 4 KiB payloads and repeated runs. Keep all samples and report median and tails. This test does not measure sustained link bandwidth; do not invent a throughput figure from latency, nominal link rate or TCP `iperf3` results.
 
+## Optional GPU keepalive
+
+Read `docs/gpu-keepalive.md` before trying to reproduce the GPU-active headline figures. Those measurements used lab driver 0.1.17; the public installation recipe remains 0.1.16. Do not bump versions, install a different driver or claim equivalent measured performance merely to match the banner.
+
+Build `client/fabric_keepalive.swift` with the documented Swift command on the target Studio. The helper is an ordinary Metal process and requires no root, Recovery change, driver knob or reboot. Prefer a bounded duration for a smoke check; run continuously only for the requested measurement and stop it afterward. Do not install an autostart service without a request. Record GPU-active versus idle conditions, keep the RDMA path MTU at 1024 for the headline reproduction, and compare matching off/on runs. GPU activity consumes resources and does not prove zero CPU use or an inference speedup.
+
 ## Completion report
 
 Say whether the outcome is preparation only, installed, loaded, port active, byte-verified RDMA or measured latency. Give the exact remaining owner action if blocked. Distinguish physical attachment problems, missing GIDs, OS approval, unsupported builds and transfer failures rather than calling all of them a driver problem.

@@ -2,7 +2,7 @@
 
 ![MCDMA connecting a Mac Studio and NVIDIA DGX Spark over Thunderbolt 5 and ConnectX-5, with measured RDMA completion times](assets/mcdma.png)
 
-*Hardware RDMA between Mac and Spark, with verified shared Metal/CUDA buffer access.*
+*Measured host-memory RDMA with the Studio GPU active; shared Metal/CUDA buffer correctness was verified separately.*
 
 ## Speed: one Spark ↔ one Mac Studio
 
@@ -10,12 +10,16 @@
 
 | Initiator → peer | RDMA WRITE | RDMA READ |
 |---|---:|---:|
-| Mac Studio → Spark | **10.208 µs** | **7.875 µs** |
-| Spark → Mac Studio | **4.096 µs** | **7.136 µs** |
+| Mac Studio → Spark | **7.625 µs** | **6.042 µs** |
+| Spark → Mac Studio | **3.680 µs** | **5.536 µs** |
 
-Measured on **macOS 27, build 26A428**, with an **M3 Ultra Mac Studio, 256 GB**, and **one NVIDIA DGX Spark**, using MCDMA 0.1.16 and the Mac's userspace BlueFlame-64 path. These are 4 KiB submission-to-application-observed-completion medians at queue depth one, pooled across three runs with 1,000 samples per operation per initiator after 100 warmups. The full six-configuration campaign recorded 144,000 samples, with outliers retained.
+Measured on **macOS 27, build 26A428**, with an **M3 Ultra Mac Studio, 256 GB**, and **one NVIDIA DGX Spark**, using lab driver **0.1.17**, userspace BlueFlame-64 and **continuous Metal keepalive on the Studio**. These are 4 KiB submission-to-application-observed-completion medians at queue depth one and **RDMA path MTU 1024**, pooled across three runs with 1,000 samples per operation per initiator after 100 warmups. All 12,000 measured samples are retained, including outliers.
 
-The arrow names the initiator, not the payload direction: a Mac-initiated READ fetches bytes from the Spark. These are host-memory RDMA measurements, not one-way network latency or GPU-memory results. WRITE / READ p95 values were 22.042 / 20.333 µs from the Mac and 14.960 / 20.400 µs from the Spark. The bulk research traces are retained outside this driver repository.
+The arrow names the initiator: a Mac-initiated READ fetches bytes from the Spark. These are registered host-memory measurements, not one-way network latency, GPU-buffer latency or inference results. WRITE / READ p95 values were **14.000 / 10.708 µs** from the Mac and **4.320 / 6.304 µs** from the Spark. The [measurement note](docs/gpu-keepalive.md) includes tails, per-run results and reproduction steps; raw traces remain outside this driver repository.
+
+**What changed:** keeping the Studio GPU active with a small Metal workload repeatedly reduced RDMA latency in our tests. Our working explanation is a platform power/performance state associated with GPU activity; the exact internal mechanism is not measured. `fabric-keepalive` is an optional, unprivileged userspace program with no reboot or driver setting required. It consumes GPU time and power, so test its effect on your actual workload.
+
+**Version distinction:** the measurements above used the installed lab driver 0.1.17; this repository's build and installation recipe still produce **0.1.16**. This update publishes the standalone helper, not a new driver installer. The helper uses only Metal APIs and does not require a 0.1.17-specific interface, but the same latency on 0.1.16 has not been established by this three-run set.
 
 MCDMA is an experimental native macOS RDMA driver and userspace verbs provider for Mellanox ConnectX-5 Ex, developed by **Ash Hart**. The NICs move the payload; the CPU still submits work and observes completions.
 
@@ -41,7 +45,7 @@ Installing MCDMA alone does not connect an inference engine to this path. Direct
 | Peer | One DGX Spark using its ConnectX-7 Ethernet port |
 | Current network link | 40GbE with the current cable; replacement pending |
 | Replacement cables | 2 × Mellanox MCP1600-C001E30N, 100GbE QSFP28-to-QSFP28 passive copper DAC, 1 m; not yet validated in this setup |
-| MTU | Ethernet 9000 bytes, RDMA path 4096 bytes |
+| MTU | Ethernet 9000 bytes; headline benchmark RDMA path 1024 bytes, initial validation recipe 4096 bytes |
 
 Use a separate management connection such as Wi-Fi or another Ethernet interface. MCDMA's `mcrdmaN` interfaces provide RDMA addressing, not ordinary TCP networking. The card's nominal port rate does not establish measured Thunderbolt throughput.
 
@@ -128,7 +132,17 @@ There is no separate driver daemon to launch: the approved kext attaches to the 
 
 ### 5. Verify transfers and check your speeds
 
-First run the [four-way byte-verifying test](docs/install.md#5-verify-rdma-before-using-it) in kernel mode, then direct mode and BlueFlame-64 mode. After all checks pass, use the same explicit SSH hosts, executable paths and live device names to record both initiation directions:
+First run the [four-way byte-verifying test](docs/install.md#5-verify-rdma-before-using-it) in kernel mode, then direct mode and BlueFlame-64 mode. After all checks pass, build the optional helper on the Studio and run it in a separate Terminal to reproduce the GPU-active condition:
+
+```sh
+mkdir -p build
+xcrun swiftc -O client/fabric_keepalive.swift -framework Metal -o build/fabric-keepalive
+build/fabric-keepalive 0 small
+```
+
+`0` runs until you stop it with Ctrl-C; `30 small` runs for 30 seconds. No `sudo`, extension approval or restart is needed for the helper. See [keepalive usage and controls](docs/gpu-keepalive.md#build-and-run) before comparing results.
+
+Use the same explicit SSH hosts, executable paths and live device names to record both initiation directions:
 
 ```sh
 mkdir -p results
@@ -139,15 +153,15 @@ python3 tools/native_cross_host.py \
   --mac-checker "$MAC_CHECKER" \
   --mac-interface "$MAC_IF" --peer-interface "$PEER_IF" \
   --mac-device "$MAC_RDMA_DEVICE" --peer-device "$PEER_RDMA_DEVICE" \
-  --peer-gid-index "$PEER_GID_INDEX" --path-mtu 4096 \
+  --peer-gid-index "$PEER_GID_INDEX" --path-mtu 1024 \
   --payload-bytes 4096 --mac-cq-map 2 --mac-user-post 1 --mac-user-bf 64 \
-  --mac-latency --peer-latency --output results/latency-4096-bf64.json
+  --mac-latency --peer-latency --output results/latency-4096-mtu1024-gpu-active-bf64.json
 
-python3 tools/latency_summary.py results/latency-4096-bf64.mac-latency.csv
-python3 tools/latency_summary.py results/latency-4096-bf64.spark-latency.csv
+python3 tools/latency_summary.py results/latency-4096-mtu1024-gpu-active-bf64.mac-latency.csv
+python3 tools/latency_summary.py results/latency-4096-mtu1024-gpu-active-bf64.spark-latency.csv
 ```
 
-The [guide defines every variable](docs/install.md#5-verify-rdma-before-using-it). Use noninteractive SSH over the management network; both neighbors must already be configured. The summaries report median, p95, p99, maximum and sample counts. Repeat at `--payload-bytes 1024` with a different output filename, and repeat each configuration before comparing it. Keep all logs in ignored `results/`; they can contain addresses and memory-region access keys.
+The [guide defines every variable](docs/install.md#5-verify-rdma-before-using-it). Use noninteractive SSH over the management network; both neighbors must already be configured. The summaries report median, p95, p99, maximum and sample counts. Also collect matching keepalive-off runs with fresh filenames, keeping the driver, provider, client binaries and MTU unchanged; the published 0.1.17 figures are not a guarantee for the 0.1.16 installer. Repeat at `--payload-bytes 1024` with a different output filename, and repeat each configuration before comparing it. Keep all logs in ignored `results/`; they can contain addresses and memory-region access keys.
 
 **Throughput is a separate measurement.** This beta's supplied test measures 1 KiB/4 KiB latency at queue depth one; it does not yet provide a validated sustained-bandwidth test. Do not label payload divided by median latency as link throughput, or an `iperf3` TCP result as MCDMA RDMA bandwidth. Large-transfer and queue-depth throughput testing is planned alongside the latency work.
 
@@ -161,7 +175,7 @@ I also have around **25 experiments planned for heterogeneous AI workloads**: pi
 
 ## Scope and limits
 
-The repository contains the native driver, userspace provider, build/setup tools and tests needed to validate CX5 RDMA. Runtime installation requires only the kernel extension, provider and provider configuration. Historical benchmark archives, model-serving experiments, vendor firmware, SDK/KDK files, private installers and generated binaries are excluded.
+The repository contains the native driver, userspace provider, build/setup tools and tests needed to validate CX5 RDMA. Runtime installation requires only the kernel extension, provider and provider configuration; the optional Metal keepalive runs separately. Historical benchmark archives, model-serving experiments, vendor firmware, SDK/KDK files, private installers and generated binaries are excluded.
 
 The portable setup has offline checks, but a fresh-machine installation following this recipe has not yet been completed. Foreign-QPN isolation, process death with outstanding direct work and hot removal with mapped pages remain open. The shared GPU-accessible buffer checks described above do not establish direct access to existing CUDA device allocations or Metal private buffers, inference-engine integration, universal ConnectX support or zero-CPU operation. Read [removal and recovery](docs/install.md#removal-and-recovery) before installation.
 
