@@ -8,6 +8,8 @@ const path = require('path');
 const { adminRun, run, Host } = require('./exec');
 const { KEXT_PATH, PROVIDER_PATH, CONF_PATH, TOOLS_DIR } = require('./macinfo');
 const { runTransferTest } = require('./testrun');
+const { installDecision } = require('./version');
+const { sha256 } = require('./driverpkg');
 
 const SUPPORT_DIR = '/Library/Application Support/MCDMA';
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
@@ -22,14 +24,31 @@ function classifyLoad(text, code) {
 
 async function installDriver({ pkg }) {
   if (!pkg || !pkg.available) return { ok: false, message: 'no driver package available' };
+  const manifest = pkg.manifest || {};
+  if (!/^[0-9a-f]{64}$/.test(manifest.archive_sha256 || '') || await sha256(pkg.archive) !== manifest.archive_sha256)
+    return { ok: false, message: 'Driver archive checksum does not match its manifest' };
+  const probe = await new Host('local').sh(`if [ -d ${q(KEXT_PATH)} ]; then /usr/libexec/PlistBuddy -c 'Print CFBundleVersion' ${q(KEXT_PATH + '/Contents/Info.plist')}; else echo absent; fi`);
+  if (probe.code !== 0) return { ok: false, message: 'Cannot read installed driver version' };
+  const installed = probe.out.trim() === 'absent' ? null : probe.out.trim();
+  const decision = installDecision(installed, pkg.version);
+  if (!decision.allowed) return { ok: false, message: decision.reason };
   const script = `
 set -e
+# Recheck after administrator authentication, before changing any installed files.
+current=absent
+if [ -d ${q(KEXT_PATH)} ]; then current=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' ${q(KEXT_PATH + '/Contents/Info.plist')}); fi
+[ "$current" = ${q(installed || 'absent')} ] || { echo 'Installed driver changed during approval; run the check again'; exit 3; }
+[ "$(/usr/bin/shasum -a 256 ${q(pkg.archive)} | /usr/bin/cut -d ' ' -f1)" = ${q(manifest.archive_sha256)} ] || { echo 'Archive changed during approval'; exit 3; }
+[ "$(/usr/bin/sw_vers -buildVersion)" = '26A428' ] || { echo 'This development package requires macOS build 26A428'; exit 3; }
 log() { echo "[install] $*"; }
 stage=$(mktemp -d /tmp/mcdma-install.XXXXXX)
 trap 'rm -rf "$stage"' EXIT
 log "extracting $(basename ${q(pkg.archive)})"
-/usr/bin/tar xzf ${q(pkg.archive)} -C "$stage"
-[ -d "$stage/MCDMACX5Native.kext" ] || { echo "archive has no MCDMACX5Native.kext"; exit 3; }
+/bin/cp ${q(pkg.archive)} "$stage/archive.tar.gz"
+printf '%s' ${q(JSON.stringify(manifest))} > "$stage/manifest.json"
+python3 ${q(path.join(__dirname, '..', 'tools', 'verify_package.py'))} "$stage/archive.tar.gz" "$stage/payload" "$stage/manifest.json"
+/usr/bin/codesign --verify --strict "$stage/payload/MCDMACX5Native.kext"
+[ "$(/usr/bin/dwarfdump --uuid "$stage/payload/MCDMACX5Native.kext/Contents/MacOS/MCDMACX5Native" | /usr/bin/awk '{print $2}')" = ${q(pkg.uuid)} ] || { echo 'Kernel extension UUID mismatch'; exit 3; }
 /bin/mkdir -p ${q(SUPPORT_DIR)}
 if [ -d ${q(KEXT_PATH)} ] || [ -f ${q(PROVIDER_PATH)} ]; then
   backup=${q(SUPPORT_DIR)}/backup-$(date +%Y%m%d-%H%M%S)
@@ -40,15 +59,15 @@ if [ -d ${q(KEXT_PATH)} ] || [ -f ${q(PROVIDER_PATH)} ]; then
   log "previous files backed up to $backup"
 fi
 /bin/rm -rf ${q(KEXT_PATH)}
-/usr/bin/ditto "$stage/MCDMACX5Native.kext" ${q(KEXT_PATH)}
+/usr/bin/ditto "$stage/payload/MCDMACX5Native.kext" ${q(KEXT_PATH)}
 /usr/sbin/chown -R root:wheel ${q(KEXT_PATH)}
 /bin/chmod -R go-w ${q(KEXT_PATH)}
 /usr/bin/codesign --verify --strict ${q(KEXT_PATH)} && log "kernel extension signature verified"
 /bin/mkdir -p /usr/local/lib/rdma /etc/libibverbs.d ${q(TOOLS_DIR)}
-/usr/bin/install -m 755 -o root -g wheel "$stage/libmcdma-rdmav34.so" ${q(PROVIDER_PATH)}
-/usr/bin/install -m 644 -o root -g wheel "$stage/mcdma.driver" ${q(CONF_PATH)}
-for t in "$stage"/tools/*; do [ -f "$t" ] && /usr/bin/install -m 755 -o root -g wheel "$t" ${q(TOOLS_DIR)}/; done
-if [ -f "$stage/tools/linux-arm64/verbs-peer" ]; then /bin/mkdir -p ${q(TOOLS_DIR)}/linux-arm64; /usr/bin/install -m 755 "$stage/tools/linux-arm64/verbs-peer" ${q(TOOLS_DIR)}/linux-arm64/; fi
+/usr/bin/install -m 755 -o root -g wheel "$stage/payload/libmcdma-rdmav34.so" ${q(PROVIDER_PATH)}
+/usr/bin/install -m 644 -o root -g wheel "$stage/payload/mcdma.driver" ${q(CONF_PATH)}
+for t in "$stage/payload"/tools/*; do [ -f "$t" ] && /usr/bin/install -m 755 -o root -g wheel "$t" ${q(TOOLS_DIR)}/; done
+if [ -f "$stage/payload/tools/linux-arm64/verbs-peer" ]; then /bin/mkdir -p ${q(TOOLS_DIR)}/linux-arm64; /usr/bin/install -m 755 "$stage/payload/tools/linux-arm64/verbs-peer" ${q(TOOLS_DIR)}/linux-arm64/; fi
 log "driver ${pkg.version} files installed"
 set +e
 /usr/bin/kmutil load --load-style start-and-match --bundle-path ${q(KEXT_PATH)} > "$stage/load.log" 2>&1; code=$?
@@ -64,7 +83,7 @@ echo "===LOADLOG"; cat "$stage/load.log"; echo "===LOADEXIT $code"
   if (!ok) return { ok: false, message: `installation failed: ${(r.out + r.err).trim().split('\n').slice(-3).join(' ')}`, log: r.out };
   const kind = classifyLoad(loadLog, code);
   const messages = {
-    loaded: `Driver ${pkg.version} installed and loaded.`,
+    loaded: `Driver ${pkg.version} files installed; verify the loaded UUID before running transfers.`,
     approval: 'Driver installed. macOS needs your approval: open System Settings → Privacy & Security, click Allow for the MCDMA driver, then restart.',
     restart: 'Driver installed. Restart the Mac to load it.',
     error: `Driver files installed, but loading reported: ${loadLog.split('\n').slice(-2).join(' ') || `exit ${code}`}`

@@ -8,7 +8,7 @@ function studio(stage = 'ready') {
   const installed = stage !== 'fresh';
   const loaded = stage === 'ready' || stage === 'unconfigured';
   const registry = loaded ? ports.map(([iface, pci]) => ({ iface, pci, portActive: true, gidLive: stage === 'ready', quarantined: false, startError: null, userQueues: true, userBlueFlame: true, blueFlame: true,
-    ethernetMtu: 9000, frameMtu: 9022, transport: 'hardware RoCE v2; polled RC; static IPv6 neighbours', build: '27A000', pciePath: `${pci} mps=128 mrrs=512 ro=1 aspm=0 | 2:0:0(3:3) mps=128 mrrs=512 ro=1 aspm=0`, knobs: { maxReadRequest: 0, relaxedOrdering: false, ackEveryPacket: false }, raw: {} })) : [];
+    ethernetMtu: 9000, frameMtu: 9022, transport: 'hardware RoCE v2; polled RC; static IPv6 neighbours', build: '26A428', pciePath: `${pci} mps=128 mrrs=512 ro=1 aspm=0 | 2:0:0(3:3) mps=128 mrrs=512 ro=1 aspm=0`, knobs: { maxReadRequest: 0, relaxedOrdering: false, ackEveryPacket: false }, raw: {} })) : [];
   const ifaces = {};
   if (loaded) for (const [iface, , mac] of ports) ifaces[iface] = { name: iface, flags: ['UP', 'BROADCAST', 'RUNNING', 'MULTICAST'], mtu: 9000, mac, inet6: stage === 'ready' ? [{ addr: eui64(mac), prefix: 64 }] : [], inet: [], status: null };
   const ndp = stage === 'ready' ? [
@@ -16,14 +16,14 @@ function studio(stage = 'ready') {
     { addr: eui64('02:cc:dd:00:00:11'), iface: 'mcrdma1', lladdr: '02:cc:dd:00:00:11', expire: 'permanent', state: 'R', permanent: true }] : [];
   const info = {
     ok: true, reachable: true, at: Date.now(), hostKind: 'local', hostLabel: 'this Mac', demo: true,
-    os: { name: 'macOS', version: '27.0', build: '27A000', major: 27 }, chip: { brand: 'Apple M3 Ultra', memoryGiB: 256, arch: 'arm64', hostname: 'Mac-Studio' },
+    os: { name: 'macOS', version: '27.0', build: '26A428', major: 27 }, chip: { brand: 'Apple M3 Ultra', memoryGiB: 256, arch: 'arm64', hostname: 'Mac-Studio' },
     sip: { raw: 'System Integrity Protection status: disabled.', state: 'disabled' }, kextConsent: 'enabled', appleSilicon: true,
     pci: { devices: [], cards: [] }, thunderbolt: [{ name: 'PCIe expansion box', vendor: null, mode: 'usb_four_v2', uid: '0x0000000000000001', deviceId: null, speed: '80 Gb/s', firmware: null, bus: 'thunderboltusb4_bus_3', receptacle: '4' }], tunnels: [],
-    registry, loaded: loaded ? { loaded: true, version: '0.1.17', uuid: '00000000-0000-0000-0000-000000000017' } : { loaded: false, version: null, uuid: null },
-    kext: installed ? { installed: true, version: '0.1.17', bundleId: 'org.mcdma.cx5.native', requiresMacOSMajor: 27, signature: 'ad hoc', sha256: '0000000000000000000000000000000000000000000000000000000000000001', personality: {}, match: '0x101915b3' } : { installed: false },
+    registry, loaded: loaded ? { loaded: true, version: '0.1.18', uuid: '00000000-0000-0000-0000-000000000018' } : { loaded: false, version: null, uuid: null },
+    kext: installed ? { installed: true, version: '0.1.18', bundleId: 'org.mcdma.cx5.native', requiresMacOSMajor: 27, signature: 'ad hoc', sha256: '0000000000000000000000000000000000000000000000000000000000000001', personality: {}, match: '0x101915b3' } : { installed: false },
     provider: installed ? { present: true, sha256: '0000000000000000000000000000000000000000000000000000000000000002', conf: 'driver /usr/local/lib/rdma/libmcdma', confPresent: true, signature: 'ad hoc' } : { present: false, sha256: null, conf: null, confPresent: false, signature: null },
     rdma: loaded ? ports.map(([iface]) => ({ name: `rdma_${iface}`, transport: 'InfiniBand (0)', vendorId: '0x15b3', partId: 4121, ports: [{ port: 1, state: 'PORT_ACTIVE', active: true, linkLayer: 'Ethernet', activeMtu: 4096, maxMtu: 4096 }] })) : [],
-    ifaces, ndp, tools: { installed: installed ? ['native-verbs-peer', 'fabric-keepalive', 'mcdma-set'] : [], launchDaemon: false, neighboursConf: null }, pending: [], installState: stage === 'approve' ? { version: '0.1.17', loadExit: 27, loadLog: 'Kext rejected due to system policy: must be approved in System Settings' } : null
+    ifaces, ndp, tools: { installed: installed ? ['native-verbs-peer', 'fabric-keepalive', 'mcdma-set'] : [], launchDaemon: false, neighboursConf: null }, pending: [], installState: stage === 'approve' ? { version: '0.1.18', loadExit: 27, loadLog: 'Kext rejected due to system policy: must be approved in System Settings' } : null
   };
   for (const [iface, pci] of ports) info.pci.devices.push({ name: 'ConnectX-5 Ex', vendorId: '0x15b3', deviceId: '0x1019', subsystemId: '0x0008', revision: '0x0000', slot: `Thunderbolt@${pci.replace(/:/g, ',')}`, pci, card: '3:0', tunnelled: true, linkWidth: 'x4', linkSpeed: '16.0 GT/s', linkUp: true, driverAttached: loaded, supported: true });
   const enclosure = { ...info.thunderbolt[0], matched: true };

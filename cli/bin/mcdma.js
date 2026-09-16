@@ -20,6 +20,7 @@ Commands
   detect                    Find which Spark port each Mac port is cabled to (short real RDMA transfers)
   configure                 Link-local addresses and static neighbours on the Mac and the Sparks, persisted
   test [LINK]               RDMA transfer test on every link, or one (e.g. mcrdma1 or local:mcrdma1)
+  bandwidth LINK --output DIR  Sustained RDMA sweep from a source checkout; saves raw evidence
   driver install|load       Install the bundled driver package / ask macOS to load it
   sparks list|add HOST [--name N]|remove ID
   macs list|add HOST [--name N]|remove ID          Another Mac with a card, managed over ssh
@@ -37,13 +38,15 @@ Options
   --quick         Transfer test without latency sampling
   --studio-host H Manage the Mac with the card over ssh (checks, wiring, Sparks and tests only)
   --demo          Synthetic data, no hardware needed
+  --output DIR    New bandwidth evidence directory
+  --settings-dir D  Separate local CLI settings directory
   --no-color
 
 Exit codes: 0 done · 1 failed · 2 usage · 3 waiting for you (approve the driver or restart)`;
 
 /* ---------- argv ---------- */
 const argv = process.argv.slice(2);
-const flags = { json: false, yes: false, quiet: false, quick: false, demo: false, color: process.stdout.isTTY, studioHost: null, name: null, seconds: null };
+const flags = { json: false, yes: false, quiet: false, quick: false, demo: false, color: process.stdout.isTTY, studioHost: null, name: null, seconds: null, output: null, settingsDir: null, bandwidth: {} };
 const words = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -54,6 +57,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--demo') flags.demo = true;
   else if (a === '--no-color') flags.color = false;
   else if (a === '--studio-host') flags.studioHost = argv[++i];
+  else if (a === '--output') flags.output = argv[++i];
+  else if (a === '--settings-dir') flags.settingsDir = argv[++i];
+  else if (['--ops', '--sizes', '--depths', '--qps', '--total', '--repeats', '--warmup', '--verify-bytes'].includes(a)) flags.bandwidth[a.slice(2)] = argv[++i];
   else if (a === '--name') flags.name = argv[++i];
   else if (a === '--seconds') flags.seconds = Number(argv[++i]);
   else if (a === '-h' || a === '--help' || a === 'help') { console.log(USAGE); process.exit(0); }
@@ -81,7 +87,7 @@ async function confirm(question) {
 }
 
 /* ---------- engine ---------- */
-const userData = path.join(os.homedir(), 'Library', 'Application Support', 'MCDMA');
+const userData = flags.settingsDir ? path.resolve(flags.settingsDir) : path.join(os.homedir(), 'Library', 'Application Support', 'MCDMA');
 const packagePaths = { appPath: path.resolve(__dirname, '..') };
 const store = new Store(userData);
 if (flags.studioHost) store.override({ studio: { mode: 'ssh', host: flags.studioHost } });
@@ -131,10 +137,24 @@ function findLink(name) {
 
 /* ---------- commands ---------- */
 const commands = {
+  async bandwidth() {
+    if (flags.demo) throw new Error('Bandwidth has no synthetic results');
+    await engine.refresh('all');
+    const link = findLink(rest[0]);
+    const { bandwidthCommand } = require('../lib/bandwidth');
+    const [program, args] = bandwidthCommand({ root: path.resolve(__dirname, '..', '..'), link, settings: store.get(), output: flags.output, options: flags.bandwidth });
+    const { spawn } = require('child_process');
+    const code = await new Promise((resolve, reject) => {
+      const child = spawn(program, args, { stdio: ['ignore', flags.json ? 2 : 1, 2] });
+      child.on('error', reject); child.on('close', (value) => resolve(value === null ? 1 : value));
+    });
+    if (flags.json) jsonOut({ ok: code === 0, output: path.resolve(flags.output) });
+    return code === 0 ? 0 : 1;
+  },
   async status() {
     await engine.refresh('all');
     const S = engine.snapshot();
-    if (flags.json) jsonOut(resultJson()); else printStatus(S);
+    if (flags.json) jsonOut(resultJson({ ok: S.checks.overall !== 'fail' })); else printStatus(S);
     return S.checks.overall === 'fail' ? 1 : 0;
   },
   async enable() {

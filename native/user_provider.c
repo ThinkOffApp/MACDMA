@@ -33,7 +33,7 @@
 // next post once this many are outstanding, and inside poll as a safety valve.
 #define MCDMA_ACK_BATCH 8u
 #define MCDMA_ACK_SAFETY 24u
-#define MCDMA_OBJECTS 64u
+#define MCDMA_OBJECTS 256u
 struct mcdma_vmr { struct ibv_mr mr; int type,access; };
 struct mcdma_cq {
     struct ibv_cq cq;
@@ -231,16 +231,60 @@ static void publish(struct ibv_wc *wc,const struct mcdma_user_completion *c) {
     memset(wc,0,sizeof(*wc));
     wc->wr_id=c->id; wc->status=(enum ibv_wc_status)c->status; wc->opcode=(enum ibv_wc_opcode)c->opcode;
     wc->vendor_err=c->vendor; wc->byte_len=c->bytes; wc->qp_num=c->qpn;
+    wc->wc_flags=(unsigned)c->flags; wc->imm_data=c->immediate;
 }
 static int same(const struct ibv_wc *wc,const struct mcdma_user_completion *c) {
     if (c->user) {
         // The kernel holds no record for a user-posted QP: it reports the
         // hardware counter, the queue side and the raw byte count only.
         return wc->wr_id==c->counter && ((uint32_t)wc->opcode&128u)==(c->opcode&128u) &&
-               (wc->status==IBV_WC_SUCCESS ? c->status<=1 : (uint32_t)wc->status==c->status);
+               (wc->status==IBV_WC_SUCCESS ? c->status<=1 : (uint32_t)wc->status==c->status) &&
+               (c->status ? 1 : ((uint32_t)wc->wc_flags==c->flags && (!c->flags || wc->imm_data==c->immediate)));
     }
     return wc->wr_id==c->id && (uint32_t)wc->status==c->status &&
-           (uint32_t)wc->opcode==c->opcode && wc->byte_len==c->bytes;
+           (uint32_t)wc->opcode==c->opcode && wc->byte_len==c->bytes &&
+           (c->status ? 1 : ((uint32_t)wc->wc_flags==c->flags && (!c->flags || wc->imm_data==c->immediate)));
+}
+// Public send opcodes to the hardware's: WRITE 0, WRITE_WITH_IMM 1, SEND 2,
+// SEND_WITH_IMM 3, READ 4.
+static uint8_t hardware_opcode(enum ibv_wr_opcode opcode) {
+    switch ((int)opcode) {
+    case 0: return MCDMA_WQE_WRITE; case 1: return MCDMA_WQE_WRITE_IMM;
+    case 2: return MCDMA_WQE_SEND; case 3: return MCDMA_WQE_SEND_IMM;
+    case 4: return MCDMA_WQE_READ; default: return 0;
+    }
+}
+// Builds the hardware request for one public WR. Inline bytes are gathered
+// from the caller's scatter list into `scratch` (userspace posting only).
+static int build_request(const struct ibv_send_wr *w,int allow_inline,uint8_t *scratch,struct mcdma_send_request *r) {
+    memset(r,0,sizeof(*r));
+    r->opcode=hardware_opcode(w->opcode);
+    if (!r->opcode) return EOPNOTSUPP;
+    if (w->send_flags&~(unsigned)(IBV_SEND_FENCE|IBV_SEND_SIGNALED|IBV_SEND_SOLICITED|IBV_SEND_INLINE)) return EOPNOTSUPP;
+    if (!(w->send_flags&IBV_SEND_SIGNALED)) return EOPNOTSUPP; // Every request completes signalled.
+    r->flags=(uint8_t)(w->send_flags&(IBV_SEND_FENCE|IBV_SEND_SOLICITED));
+    r->immediate=w->imm_data;
+    if (mcdma_rdma_opcode(r->opcode)) { r->remote=w->wr.rdma.remote_addr; r->rkey=w->wr.rdma.rkey; }
+    if (!w->sg_list || w->num_sge<1) return EINVAL;
+    if (w->send_flags&IBV_SEND_INLINE) {
+        if (!allow_inline || r->opcode==MCDMA_WQE_READ) return EOPNOTSUPP;
+        const unsigned limit=mcdma_rdma_opcode(r->opcode) ? MCDMA_MAX_INLINE_RDMA : MCDMA_MAX_INLINE_SEND;
+        unsigned total=0;
+        for (int i=0;i<w->num_sge;++i) {
+            if (w->sg_list[i].length>limit-total) return EINVAL;
+            memcpy(scratch+total,(const void *)(uintptr_t)w->sg_list[i].addr,w->sg_list[i].length);
+            total+=w->sg_list[i].length;
+        }
+        if (!total) return EINVAL;
+        r->inline_data=scratch; r->inline_bytes=total;
+    } else {
+        if (w->num_sge>(int)(mcdma_rdma_opcode(r->opcode) ? MCDMA_MAX_RDMA_SGE : MCDMA_MAX_SEND_SGE)) return EOPNOTSUPP;
+        for (int i=0;i<w->num_sge;++i) {
+            r->sge[i].address=w->sg_list[i].addr; r->sge[i].lkey=w->sg_list[i].lkey; r->sge[i].length=w->sg_list[i].length;
+        }
+        r->sge_count=(unsigned)w->num_sge;
+    }
+    return mcdma_request_bytes(r) ? 0 : EINVAL;
 }
 static int cq_live(const struct mcdma_cq *node) {
     return node->observation && __atomic_load_n((const uint32_t *)((const uint8_t *)node->observation+MCDMA_CQ_LIVE_OFFSET),
@@ -422,9 +466,13 @@ static int poll_cq(struct ibv_cq *cq,int maximum,struct ibv_wc *completions) {
     return result;
 }
 static struct ibv_qp *create_qp(struct ibv_pd *pd,struct ibv_qp_init_attr *attr) {
-    if (!attr || attr->qp_type!=IBV_QPT_RC || attr->srq || attr->cap.max_inline_data ||
+    struct mcdma_context *pre=pd ? context_of(pd->context) : NULL;
+    // RC only, up to two send scatter entries, one receive entry; inline
+    // data (up to the WQEBB's room) only where this process posts directly.
+    if (!attr || attr->qp_type!=IBV_QPT_RC || attr->srq ||
+        attr->cap.max_inline_data>MCDMA_MAX_INLINE_RDMA || (attr->cap.max_inline_data && !(pre && pre->user_post)) ||
         attr->cap.max_send_wr>31 || attr->cap.max_recv_wr>31 ||
-        attr->cap.max_send_sge!=1 || attr->cap.max_recv_sge!=1) { errno=EOPNOTSUPP; return NULL; }
+        attr->cap.max_send_sge<1 || attr->cap.max_send_sge>MCDMA_MAX_RDMA_SGE || attr->cap.max_recv_sge!=1) { errno=EOPNOTSUPP; return NULL; }
     if ((attr->send_cq && ((struct mcdma_cq *)attr->send_cq)->kernel_destroyed) ||
         (attr->recv_cq && ((struct mcdma_cq *)attr->recv_cq)->kernel_destroyed)) { errno=EIO; return NULL; }
     struct mcdma_qp *node=calloc(1,sizeof(*node)); if (!node) return NULL;
@@ -544,17 +592,16 @@ static int user_post_send(struct mcdma_context *mc,struct mcdma_qp *node,struct 
     if (scq->ahead>=MCDMA_ACK_BATCH && !acknowledge(scq)) return EIO;
     unsigned posted=0; uint64_t doorbell=0; int error=0;
     for (struct ibv_send_wr *w=wr;w;w=w->next) {
-        const uint8_t opcode=w->opcode==IBV_WR_RDMA_WRITE ? MCDMA_WQE_WRITE : w->opcode==IBV_WR_SEND ? MCDMA_WQE_SEND :
-                             w->opcode==IBV_WR_RDMA_READ ? MCDMA_WQE_READ : 0;
-        if (!opcode || w->num_sge!=1 || !w->sg_list || (w->send_flags&~(unsigned)IBV_SEND_SIGNALED)) { error=EOPNOTSUPP; if (bad) *bad=w; break; }
+        uint8_t scratch[MCDMA_MAX_INLINE_SEND]; struct mcdma_send_request request;
+        error=build_request(w,1,scratch,&request);
+        if (error) { if (bad) *bad=w; break; }
         if (!mcdma_user_queue_can_post(&node->sends) && scq->ahead && !acknowledge(scq)) {
             error=EIO; if (bad) *bad=w; break;
         }
         if (!mcdma_user_queue_can_post(&node->sends)) { error=ENOMEM; if (bad) *bad=w; break; }
-        const int rdma=opcode!=MCDMA_WQE_SEND;
-        const uint64_t db=mcdma_encode_send_wqe(node->queue,node->qp.qp_num,node->sends.producer,opcode,
-            w->sg_list->addr,w->sg_list->lkey,w->sg_list->length,rdma ? w->wr.rdma.remote_addr : 0,rdma ? w->wr.rdma.rkey : 0);
-        if (!db || !mcdma_user_queue_post(&node->sends,w->wr_id,opcode,w->sg_list->length)) { error=EINVAL; if (bad) *bad=w; break; }
+        const uint32_t bytes=mcdma_request_bytes(&request);
+        const uint64_t db=mcdma_encode_send_request(node->queue,node->qp.qp_num,node->sends.producer,&request);
+        if (!db || !mcdma_user_queue_post(&node->sends,w->wr_id,request.opcode,bytes)) { error=EINVAL; if (bad) *bad=w; break; }
         doorbell=db; ++posted;
     }
     if (posted==1 && node->blueflame) {
@@ -622,10 +669,9 @@ static int mcdma_post_send(struct ibv_qp *qp,struct ibv_send_wr *wr,struct ibv_s
         // Mirror exactly the requests the kernel can accept, in kernel order.
         unsigned recorded=0;
         for (const struct ibv_send_wr *w=wr;w;w=w->next) {
-            const uint8_t opcode=w->opcode==IBV_WR_RDMA_WRITE ? 0x08 : w->opcode==IBV_WR_SEND ? 0x0a :
-                                 w->opcode==IBV_WR_RDMA_READ ? 0x10 : 0;
-            if (!opcode || w->num_sge!=1 || !w->sg_list ||
-                !mcdma_user_queue_post(&node->sends,w->wr_id,opcode,w->sg_list->length)) break;
+            struct mcdma_send_request request;
+            if (build_request(w,0,NULL,&request) ||
+                !mcdma_user_queue_post(&node->sends,w->wr_id,request.opcode,mcdma_request_bytes(&request))) break;
             ++recorded;
         }
         error=ibv_cmd_post_send(qp,wr,bad);
@@ -678,7 +724,9 @@ static int mcdma_post_recv(struct ibv_qp *qp,struct ibv_recv_wr *wr,struct ibv_r
     return error;
 }
 static struct ibv_mr *register_mr(struct ibv_pd *pd,void *address,size_t length,uint64_t iova,int access) {
-    if (!length || length>2*1024*1024-((uintptr_t)address&4095) ||
+    // The kernel decides what a mapping can describe; only the shared 16 KiB
+    // page offset of the HCA address and the access bits are checked here.
+    if (!length || (uintptr_t)address>UINT64_MAX-length || iova>UINT64_MAX-length ||
         ((iova^(uintptr_t)address)&0x3fff) || (access&~7) || ((access&2)&&!(access&1))) {
         errno=EINVAL; return NULL;
     }

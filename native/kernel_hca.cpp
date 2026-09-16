@@ -230,11 +230,21 @@ bool Hca::port_active(bool &active) {
 bool Hca::alloc_pd(HardwareObject &pd) { header(0x800); return create(pd,16); }
 bool Hca::dealloc_pd(HardwareObject &pd) { return destroy(pd,0x801); }
 bool Hca::register_mr(HardwareObject &mr,uint32_t pd,uint64_t address,uint64_t length,
-                      const uint64_t *pages,size_t count,uint32_t access,uint32_t &key) {
+                      const uint64_t *pages,size_t count,uint32_t access,uint32_t &key,unsigned log_page) {
     if (mr.live) return false;
     if (++next_key_==0) ++next_key_;
-    const size_t size=cx5::create_user_mkey(input_,sizeof(input_),pd,next_key_,address,length,pages,count,access);
-    if (!size || !create(mr,size)) return false;
+    bool relaxed=relaxed_ordering_requested && !relaxed_ordering_refused;
+    size_t size=cx5::create_user_mkey(input_,sizeof(input_),pd,next_key_,address,length,pages,count,access,log_page,relaxed);
+    if (!size) return false;
+    if (!create(mr,size)) {
+        // A clean firmware refusal of the relaxed-ordering bits (not a transport
+        // fault) falls back to strict ordering for this and later keys.
+        if (!relaxed || transport.quarantined || !transport.last.completed || !transport.last.firmware_status) return false;
+        relaxed_ordering_refused=true; relaxed=false;
+        size=cx5::create_user_mkey(input_,sizeof(input_),pd,next_key_,address,length,pages,count,access,log_page,false);
+        if (!size || !create(mr,size)) return false;
+    }
+    if (relaxed) ++relaxed_ordering_keys;
     key=(mr.id<<8)|next_key_; return true;
 }
 bool Hca::deregister_mr(HardwareObject &mr,uint32_t key) {
@@ -382,7 +392,9 @@ bool Hca::purge_qp_completions(HardwareCQ &cq,uint32_t qpn) {
     }
     return true;
 }
-bool Hca::transition(HardwareQP &qp,uint16_t opcode,const cx5::RCConnection &connection) {
+bool Hca::transition(HardwareQP &qp,uint16_t opcode,const cx5::RCConnection &requested) {
+    cx5::RCConnection connection=requested;
+    connection.log_ack_req_freq=ack_request_every_packet ? 0 : 8;
     if (!qp.object.live || connection.qpn!=qp.object.id || connection.pd!=qp.pd ||
         connection.cq!=qp.send_cq->object.id || connection.doorbell!=qp.buffer.dma+4096 ||
         opcode!=0x502+qp.state || !cx5::encode_rc_transition(input_,sizeof(input_),opcode,connection)) return false;
@@ -392,11 +404,19 @@ bool Hca::transition(HardwareQP &qp,uint16_t opcode,const cx5::RCConnection &con
 }
 bool Hca::post(HardwareQP &qp,uint64_t work_id,uint8_t opcode,uint64_t local,uint32_t lkey,uint32_t length,
                uint64_t remote,uint32_t rkey) {
-    if (qp.user_posted || !qp.object.live || qp.state!=3 || !transport.ready() ||
+    cx5::SendRequest request; request.opcode=opcode; request.remote=remote; request.rkey=rkey;
+    request.sge[0]={local,lkey,length}; request.sge_count=1;
+    return post(qp,work_id,request);
+}
+bool Hca::post(HardwareQP &qp,uint64_t work_id,const cx5::SendRequest &request) {
+    if (qp.user_posted || !qp.object.live || qp.state!=3 || !transport.ready() || request.inline_data ||
         !qp.sends.can_post(qp.producer) || qp.send_cq->outstanding>=31) return false;
+    const uint32_t length=cx5::request_bytes(request);
+    if (!length) return false;
     auto *wqe=qp.buffer.cpu+512+(qp.producer&31)*64;
-    if (!cx5::encode_wqe(wqe,64,qp.object.id,uint16_t(qp.producer),opcode,local,lkey,length,remote,rkey)) return false;
-    if (!qp.sends.post(qp.producer,work_id,opcode,length,lkey)) return false;
+    if (!cx5::encode_send_request(wqe,64,qp.object.id,uint16_t(qp.producer),request)) return false;
+    uint32_t lkeys[3]; for (unsigned i=0;i<request.sge_count;++i) lkeys[i]=request.sge[i].lkey;
+    if (!qp.sends.post(qp.producer,work_id,request.opcode,length,lkeys,request.sge_count)) return false;
     ++qp.send_cq->outstanding;
     publish_dma(); cx5::write_be32(qp.buffer.cpu+4100,qp.producer+1); publish_dma();
     const uint64_t uar=uint64_t(uar_.id)<<uar_shift_;

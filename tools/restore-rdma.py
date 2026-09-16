@@ -63,8 +63,8 @@ def main(argv=None):
     if build != '26A428':
         parser.error('This setup procedure is validated only for build 26A428')
     loaded = subprocess.check_output(['/usr/bin/kmutil', 'showloaded', '--list-only', '--variant-suffix', 'release'], text=True)
-    if not re.search(r'org\.mcdma\.cx5\.native\s+\(0\.1\.16\)', loaded):
-        parser.error('Expected the 0.1.16 native driver to be loaded')
+    if not re.search(r'org\.mcdma\.cx5\.native\s+\(0\.1\.18\)', loaded):
+        parser.error('Expected the 0.1.18 native driver to be loaded')
     current = subprocess.check_output(['/sbin/ifconfig', args.interface], text=True)
     actual = re.search(r'\bether\s+([0-9a-fA-F:]{17})\b', current)
     if not actual or actual.group(1).lower() != args.expected_mac.lower():

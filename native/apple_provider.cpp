@@ -6,6 +6,9 @@
 #include <sys/errno.h>
 #ifndef CX5_NATIVE_TEST
 #include <ptrauth.h>
+#define mcdma_log IOLog
+#else
+#define mcdma_log(...) ((void)0)
 #endif
 
 extern "C" ib_device *_ib_alloc_device(size_t);
@@ -284,6 +287,9 @@ size_t AppleProvider::orphan_count() const {
 }
 bool AppleProvider::reclaim_orphans() {
     CommandGuard command(this); Guard guard(this);
+    return reclaim_orphans_locked();
+}
+bool AppleProvider::reclaim_orphans_locked() {
     if (!hca_ || (hca_->transport.quarantined && !hca_->transport.detached())) return false;
     sweep_orphan_uars();
     for (auto *p=qps_,*next=p;p;p=next) { next=p->next; if (!p->core && hca_->destroy_qp(p->hardware)) forget(p); }
@@ -298,10 +304,10 @@ int AppleProvider::query_device(void *device,void *attr,void *) {
     auto *p=owner(device); Guard guard(p); if (!p || !attr) return -EINVAL;
     memset(attr,0,0x130);
     memcpy(static_cast<uint8_t *>(attr)+8,p->hca_->gid+8,8);
-    write<uint64_t>(attr,0x10,2*1024*1024); write<uint64_t>(attr,0x18,4096);
+    write<uint64_t>(attr,0x10,max_mr_bytes); write<uint64_t>(attr,0x18,4096);
     write<uint32_t>(attr,0x20,0x15b3); write<uint32_t>(attr,0x24,0x1019);
     write<uint32_t>(attr,0x2c,resource_limit); write<uint32_t>(attr,0x30,31);
-    write<uint32_t>(attr,0x48,1); write<uint32_t>(attr,0x4c,1);
+    write<uint32_t>(attr,0x48,cx5::max_rdma_sge); write<uint32_t>(attr,0x4c,cx5::max_rdma_sge);
     write<uint32_t>(attr,0x54,resource_limit); write<uint32_t>(attr,0x58,31);
     write<uint32_t>(attr,0x5c,resource_limit); write<uint32_t>(attr,0x60,resource_limit);
     write<uint32_t>(attr,0x50,1); write<uint32_t>(attr,0x64,1);
@@ -376,6 +382,9 @@ int AppleProvider::alloc_context(void *core,void *udata) {
     if (find(p->contexts_,core)) return -EINVAL;
     if (count(p->contexts_)>=resource_limit) return -ENOMEM;
     p->sweep_orphan_uars();
+    // Objects abandoned by an earlier dirty exit must not consume this
+    // process's quota; a refused reclaim simply leaves them for the next try.
+    (void)p->reclaim_orphans_locked();
     auto *node=new Context{}; if (!node) return -ENOMEM;
     node->mapping_quota=new CQMappingQuota(context_mapping_limit);
     if (!node->mapping_quota) { delete node; return -ENOMEM; }
@@ -389,10 +398,46 @@ int AppleProvider::alloc_context(void *core,void *udata) {
 void AppleProvider::dealloc_context(void *core) {
     auto *p=owner(read<void *>(core,0)); CommandGuard command(p); Guard guard(p); if (!p) return;
     auto *node=find(p->contexts_,core); if (!node) return;
+    // Hold the context through reclamation: forgetting its last PD/CQ can
+    // drop the final child reference and otherwise delete it before we return.
+    ++node->references;
     node->core=nullptr;
+    // A dying process reaches here after the core's cleanup rounds. The core
+    // frees every PD/CQ/QP wrapper of the context even when a destroy
+    // callback was refused (a busy MR, an out-of-order request or a failed
+    // firmware command) and never calls this provider about them again. Drop
+    // their core identity now, so a later process whose wrappers land at the
+    // same addresses is not mistaken for them, and keep the hardware for
+    // reclaim. The MR wrapper is ours to free.
+    const unsigned abandoned=p->orphan_context_objects(node);
     p->release_uar(node);
     p->sweep_orphan_uars();
-    if (!node->references) { unlink(p->contexts_,node); delete node; }
+    if (abandoned) {
+        const bool reclaimed=p->reclaim_orphans_locked();
+        (void)reclaimed;
+        mcdma_log("MCDMA native: context closed with %u undestroyed objects; %s\n",abandoned,
+                  reclaimed ? "reclaimed" : "retained for a later reclaim");
+    }
+    p->put_context(node);
+}
+unsigned AppleProvider::orphan_context_objects(Context *context) {
+    unsigned n=0;
+    for (auto *qp=qps_;qp;qp=qp->next)
+        if (qp->core && qp->pd->context==context) { qp->core=nullptr; qp->hardware.client_context=nullptr; ++n; }
+    for (auto *mr=mrs_;mr;mr=mr->next)
+        if (mr->core && mr->pd->context==context) {
+            mr_index_.erase(mr->index_key,mr);
+            IOFreeData(mr->core,0x88); mr->core=nullptr; ++n;
+        }
+    for (auto *cq=cqs_;cq;cq=cq->next)
+        if (cq->core && cq->context==context) {
+            cq->core=nullptr;
+            if (cq->hardware.buffer.cpu) mcdma_cq_set_live(cq->hardware.buffer.cpu,0);
+            ++n;
+        }
+    for (auto *pd=pds_;pd;pd=pd->next)
+        if (pd->core && pd->context==context) { pd->core=nullptr; ++n; }
+    return n;
 }
 int AppleProvider::mmap(void *core,void *vma) {
     auto *p=owner(read<void *>(core,0)); Guard guard(p);
@@ -521,11 +566,15 @@ int AppleProvider::create_qp(void *core,void *attr,void *udata) {
     auto *recv=p?find(p->cqs_,read<void *>(attr,0x18)):nullptr;
     if (!context || !pd || !send || !recv || pd->context!=context ||
         send->context!=context || recv->context!=context || !p->ready() || find(p->qps_,core)) return -EINVAL;
+    // RC only, no SRQ, at most 31 requests each way, up to two send scatter
+    // entries, one receive entry, and inline data up to the WQEBB's room
+    // (honoured by userspace posting; kernel posting refuses inline).
     if (read<uint32_t>(attr,0x4c)!=2 || read<void *>(attr,0x20) || read<uint32_t>(attr,0x50) ||
-        read<uint32_t>(attr,0x48)>1 || read<uint32_t>(attr,0x40) ||
+        read<uint32_t>(attr,0x48)>1 || read<uint32_t>(attr,0x40)>cx5::max_inline_rdma ||
         !read<uint32_t>(attr,0x30) || read<uint32_t>(attr,0x30)>31 ||
         !read<uint32_t>(attr,0x34) || read<uint32_t>(attr,0x34)>31 ||
-        read<uint32_t>(attr,0x38)!=1 || read<uint32_t>(attr,0x3c)!=1) return -EOPNOTSUPP;
+        !read<uint32_t>(attr,0x38) || read<uint32_t>(attr,0x38)>cx5::max_rdma_sge ||
+        read<uint32_t>(attr,0x3c)!=1) return -EOPNOTSUPP;
     if (count(p->qps_)>=resource_limit ||
         count_if(p->qps_,[&](auto *n){return n->pd->context==context;})>=context_resource_limit) return -ENOMEM;
     auto *node=new QP{}; if (!node) return -ENOMEM;
@@ -630,17 +679,20 @@ int AppleProvider::post_send(void *core,const AppleSendWR *wr,const AppleSendWR 
     auto *p=owner(read<void *>(core,0)); Guard guard(p); auto *node=p?find(p->qps_,core):nullptr;
     if (!node || !bad || !p->ready()) return -EINVAL;
     if (node->hardware.user_posted) return -EOPNOTSUPP; // Userspace owns this queue.
-    // Check ownership and exact bounds before each post; hardware also enforces
-    // the MKey's PD, bounds and permission bits. Earlier WRs remain committed.
+    // Check ownership and exact bounds of every scatter entry before each
+    // post; hardware also enforces the MKey's PD, bounds and permission bits.
+    // Earlier WRs remain committed.
     for (auto *item=wr;item;item=item->next) {
-        if (item->sge_count!=1 || !item->sge) { *bad=item; return -EOPNOTSUPP; }
-        auto *mr=p->mr_index_.find(item->sge->lkey);
-        if (!mr || !mr->core || mr->pd!=node->pd || !range(item->sge->address,item->sge->length,mr->address,mr->length) ||
-            (item->opcode==4 && !(mr->access&1))) { *bad=item; return -EACCES; }
-        AppleRDMAWR one{}; one.base=*item; one.base.next=nullptr;
-        if (item->opcode==0 || item->opcode==4) {
-            const auto *rdma=reinterpret_cast<const AppleRDMAWR *>(item); one.remote=rdma->remote; one.rkey=rdma->rkey;
+        cx5::SendRequest request; int error=0;
+        if (!apple_send_request(item,node->signal_all,request,error)) { *bad=item; return error; }
+        for (unsigned i=0;i<request.sge_count;++i) {
+            const auto &sge=request.sge[i];
+            auto *mr=p->mr_index_.find(sge.lkey);
+            if (!mr || !mr->core || mr->pd!=node->pd || !range(sge.address,sge.length,mr->address,mr->length) ||
+                (request.opcode==cx5::wqe_read && !(mr->access&1))) { *bad=item; return -EACCES; }
         }
+        AppleRDMAWR one{}; one.base=*item; one.base.next=nullptr;
+        if (cx5::rdma_opcode(request.opcode)) { one.remote=request.remote; one.rkey=request.rkey; }
         const AppleSendWR *failed=nullptr;
         const int result=apple_post_send(*p->hca_,node->hardware,node->signal_all,&one.base,&failed);
         if (result) { *bad=item; return result; }

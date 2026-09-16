@@ -12,7 +12,7 @@ const DEFAULTS = {
   mapping: {},                                         // studio iface -> { spark, iface } | null
   wiringVerified: {},                                  // studio iface -> { spark, iface, at }
   lastTests: {},                                       // studio iface -> result
-  tools: { macPeer: '', sparkPeer: '', keepalive: '', provider: '' },
+  tools: { macPeer: '', sparkPeer: '', keepalive: '', provider: '', macBw: '', sparkBw: '', macChecker: '' },
   test: { payload: 4096, mtu: 1024, arm: 'bf64', iterations: 1000 },
   monitor: { pollMs: 1000, heavyEveryTicks: 5, extraLinks: [] },
   driverPackage: '',

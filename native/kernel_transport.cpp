@@ -2,7 +2,9 @@
 #include "apple_build.hpp"
 #include "command_wait.hpp"
 #include <libkern/OSByteOrder.h>
+#include <libkern/c++/OSString.h>
 #include <string.h>
+#include <stdio.h>
 
 namespace cx5_native {
 IOReturn Buffer::allocate(IOMapper *mapper, uint64_t bytes) {
@@ -71,6 +73,64 @@ IOReturn Transport::attach(IOPCIDevice *device, IOService *owner) {
     return kIOReturnSuccess;
 }
 
+namespace {
+// Walks the standard capability list for the PCI Express capability (id 0x10).
+uint8_t express_capability(IOPCIDevice *device) {
+    if (!device || !(device->configRead16(6)&0x10)) return 0; // Status: capabilities list.
+    uint8_t at=uint8_t(device->configRead8(0x34)&0xfc);
+    for (unsigned hop=0;hop<48 && at>=0x40;++hop) {
+        const uint16_t header=device->configRead16(at);
+        if ((header&0xff)==0x10) return at;
+        at=uint8_t((header>>8)&0xfc);
+    }
+    return 0;
+}
+bool read_link(IOPCIDevice *device,PcieLink &link) {
+    link=PcieLink{};
+    if (auto *name=OSDynamicCast(OSString,device->getProperty("pcidebug")))
+        strlcpy(link.name,name->getCStringNoCopy(),sizeof(link.name));
+    else strlcpy(link.name,"?",sizeof(link.name));
+    const uint8_t cap=express_capability(device);
+    if (!cap) return false;
+    const uint16_t control=device->configRead16(cap+8), link_control=device->configRead16(cap+0x10);
+    if (control==0xffff) return false;
+    link.max_payload=128u<<((control>>5)&7); link.max_read_request=128u<<((control>>12)&7);
+    link.relaxed_ordering=(control&0x10)!=0; link.aspm_control=uint8_t(link_control&3);
+    link.valid=true; return true;
+}
+}
+bool Transport::configure_pcie(uint32_t bytes,char *text,size_t text_bytes) {
+    if (!pci_ || !opened_ || !text || !text_bytes) return false;
+    text[0]=0;
+    express_capability_=express_capability(pci_);
+    if (bytes) {
+        if (bytes<128 || bytes>4096 || (bytes&(bytes-1)) || !express_capability_) return false;
+        const uint16_t control=pci_->configRead16(express_capability_+8);
+        if (control==0xffff) return false;
+        if (!device_control_saved_) { saved_device_control_=control; device_control_saved_=true; }
+        unsigned code=0; while ((128u<<code)<bytes) ++code;
+        const uint16_t wanted=uint16_t((control&~uint16_t(7u<<12))|uint16_t(code<<12));
+        pci_->configWrite16(express_capability_+8,wanted);
+        if (pci_->configRead16(express_capability_+8)!=wanted) return false;
+        mrrs_applied_=bytes;
+    }
+    // Device first, then each bridge up to the host bridge: the tunnel's
+    // negotiated sizes are what a read across it is really limited by.
+    size_t used=0; unsigned depth=0;
+    IOService *node=pci_;
+    while (node && depth<8 && used<text_bytes) {
+        if (auto *device=OSDynamicCast(IOPCIDevice,node)) {
+            PcieLink link{}; const bool ok=read_link(device,link);
+            const int n=snprintf(text+used,text_bytes-used,"%s%s mps=%u mrrs=%u ro=%u aspm=%u%s",
+                                 used?" | ":"",link.name,link.max_payload,link.max_read_request,
+                                 link.relaxed_ordering,link.aspm_control,ok?"":" (no express capability)");
+            if (n<0) break;
+            used+=size_t(n); ++depth;
+        }
+        node=node->getProvider();
+    }
+    return true;
+}
 IOMemoryMap *Transport::map_bar_page(uint64_t page_offset,bool write_combine) {
     // Only PCI BAR MMIO is mapped physically here; DMA buffers still use IOMapper.
     // A fresh, bounded descriptor avoids changing the PCI descriptor's named
@@ -221,6 +281,10 @@ IOReturn Transport::close() {
         }
         // Also undo memory decoding when startup failed before binding our
         // queue; never overwrite or clear a foreign command queue.
+        if (device_control_saved_) {
+            pci_->configWrite16(express_capability_+8, saved_device_control_);
+            device_control_saved_=false; mrrs_applied_=0;
+        }
         if (command_saved_) {
             pci_->configWrite16(4, saved_command_);
             if (pci_->configRead16(4) != saved_command_) return kIOReturnNotReady;

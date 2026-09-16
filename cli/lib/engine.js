@@ -14,6 +14,8 @@ const demo = require('./demo');
 const { sshConfigHosts } = require('./store');
 const { FabricCollector } = require('./collect');
 
+const { compareVersions } = require('./version');
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const EMPTY_ENABLE = { running: false, stage: null, message: null, waitingFor: null, done: false, error: null };
 
@@ -261,6 +263,8 @@ class Engine extends EventEmitter {
       } else {
         result = await testrun.runTransferTest({ studioHost: this.macHost(link.mac.id), link, settings: this.store.get(), latency, onProgress: (m) => this.progress('test', m, { iface }) });
       }
+      result.identity = link.identity;
+      result.conditions = { gpuKeepalive: this.keepalive.running ? 'managed helper active' : 'uncontrolled', iterations: latency ? 1000 : 0 };
       const s = this.store.get();
       this.persist({ lastTests: { ...s.lastTests, [iface]: { ...result, log: (result.log || []).slice(-60) } } });
       this.toast(result.passed ? 'ok' : 'error', result.passed ? `${link.studio.iface} ↔ ${link.sparkName}: transfer test passed` : `${link.studio.iface} ↔ ${link.sparkName}: ${result.errors[0] || 'failed'}`);
@@ -292,7 +296,9 @@ class Engine extends EventEmitter {
       if (!st.studio.loaded.loaded) {
         if (!local) return fail('The Mac with the card is managed over ssh: install the driver on that Mac.');
         if (!st.pkg || !st.pkg.available) return fail('No driver package found. Build one with npm run package or set settings.driverPackage.');
-        const needsInstall = !st.studio.kext.installed || st.studio.kext.version !== st.pkg.version;
+        const order = compareVersions(st.pkg.version, st.studio.kext.version);
+        if (st.studio.kext.installed && order === null) return fail('Cannot compare installed and package versions.');
+        const needsInstall = !st.studio.kext.installed || order === 1;
         if (st.demo) { say('driver', 'Installing the driver (demo)…'); await sleep(1200); this.persist({ enableInProgress: false }); this.setEnable({ running: false, waitingFor: 'approval', message: 'Driver installed. Allow it in System Settings → Privacy & Security, then restart.' }); return { ok: true, waitingFor: 'approval', message: st.enable.message }; }
         say('driver', needsInstall ? `Installing driver ${st.pkg.version} (administrator rights)…` : 'Loading the driver (administrator rights)…');
         const r = needsInstall ? await actions.installDriver({ pkg: st.pkg }) : await actions.loadDriver();

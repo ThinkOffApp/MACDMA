@@ -15,7 +15,7 @@ cd "$repo_dir"
 [ -f build/libmcdma-rdmav34.so ]
 /usr/bin/codesign --verify --strict local/install/MCDMACX5Native.kext
 [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' local/install/MCDMACX5Native.kext/Contents/Info.plist)" = org.mcdma.cx5.native ]
-[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' local/install/MCDMACX5Native.kext/Contents/Info.plist)" = 0.1.16 ]
+[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' local/install/MCDMACX5Native.kext/Contents/Info.plist)" = 0.1.18 ]
 for key in MCDMALabEnabled MCDMAUserQueues MCDMAUserBlueFlame; do
   [ "$(/usr/libexec/PlistBuddy -c "Print IOKitPersonalities:MCDMACX5Native:$key" local/install/MCDMACX5Native.kext/Contents/Info.plist)" = true ]
 done

@@ -106,3 +106,19 @@ MAC=<ssh host> BUILD_DIR=<dir of the built tools on that Mac> SPARK=<ssh host> n
 - `tools/make-driver-package.sh`.
 
 Settings live in `~/Library/Application Support/MCDMA/settings.json`.
+
+## 0.1.18 compatibility and verification
+
+CLI 1.1.0 targets driver 0.1.18 and refuses an older package over a newer installed driver, including repair requests. A package is generated locally from the installed 0.1.18 build; no ad-hoc-signed driver archive is shipped in Git. The installer verifies every package member before replacing files and remains a supervised developer route, not a fresh-machine-validated consumer installer.
+
+`mcdma test --quick` checks four 4 KiB transfers per link without timing. Normal `mcdma test --json` also retains complete CSV traces and their SHA-256 hashes under each result's `traces` field. Latency peers currently use exactly 1,000 samples per operation after 100 warmups; any other `test.iterations` setting is rejected. GPU activity is uncontrolled unless the CLI's managed keepalive is active, so record that condition when comparing results. Old saved tests without a driver/provider fingerprint are treated as untested.
+
+For sustained bandwidth, build `benchmarks/mcdma_bw.c` on each host, set `tools.macBw`, `tools.sparkBw` and `tools.macChecker` to their absolute paths, and run from this source checkout:
+
+```sh
+mcdma bandwidth mcrdma1 --studio-host "$MAC_SSH" --output ../results/bandwidth-run
+```
+
+The runner defaults to WRITE/READ in both directions, 64 KiB and 1 MiB requests, queue depths 1 and 16, three repeats and one warmup. Override `--ops`, `--sizes`, `--depths`, `--qps`, `--total`, `--repeats`, `--warmup` and `--verify-bytes` as needed. It saves CSVs, binary hashes and raw logs to a new directory and stops on the first failed pair. A local Mac must also have a working key-authenticated SSH alias for this runner. The tool exists; no sustained-performance headline is claimed by this release.
+
+Use `--settings-dir DIR` for isolated test settings, and `npm test` for offline CLI regression tests. Raw status/test output includes private hardware details and memory keys; keep it outside publications.

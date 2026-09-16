@@ -39,9 +39,21 @@ public:
     SharedFlag &operator=(const SharedFlag &)=delete;
 };
 
+// One PCIe function or bridge on the path to the host: negotiated maximum
+// payload and read-request sizes, relaxed-ordering enable and ASPM control.
+struct PcieLink {
+    char name[24]{};
+    uint32_t max_payload=0, max_read_request=0;
+    bool relaxed_ordering=false; uint8_t aspm_control=0; bool valid=false;
+};
 class Transport {
 public:
     IOReturn attach(IOPCIDevice *device, IOService *owner);
+    // Reads the device's and its ancestors' PCIe control state into `text`
+    // (registry diagnostic) and, when bytes is a power of two in 128..4096,
+    // sets this device's maximum read request size, restored on close.
+    bool configure_pcie(uint32_t max_read_request_bytes, char *text, size_t text_bytes);
+    uint32_t max_read_request_applied() const { return mrrs_applied_; }
     IOReturn open();
     bool execute(const uint8_t *input, size_t input_bytes,
                  uint8_t *output, size_t output_bytes);
@@ -83,6 +95,10 @@ private:
     Buffer queue_{};
     bool bound_ = false, opened_ = false, command_saved_ = false;
     uint16_t saved_command_ = 0;
+    uint8_t express_capability_ = 0;
+    uint16_t saved_device_control_ = 0;
+    bool device_control_saved_ = false;
+    uint32_t mrrs_applied_ = 0;
     uint8_t token_ = 0;
 };
 

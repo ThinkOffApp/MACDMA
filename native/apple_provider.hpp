@@ -12,7 +12,9 @@ class AppleProvider {
 public:
     static constexpr uint32_t driver_id=0x4d434435, abi_version=2;
     static constexpr size_t device_bytes=0x9b0, ops_bytes=0x400;
-    static constexpr unsigned resource_limit=64, context_resource_limit=16, context_mapping_limit=8;
+    // Per device, per context, and mappings per context (a user-posted QP
+    // and an observed CQ take one each, the UAR page one more).
+    static constexpr unsigned resource_limit=256, context_resource_limit=64, context_mapping_limit=136;
     // mmap page numbers (16 KiB units): 1..2^32 observe a CQ read-only;
     // uar_page_number maps the requesting context's own UAR page writable;
     // uar_wc_page_number maps the same page write-combined (userspace
@@ -103,7 +105,7 @@ private:
     CQ *cqs_=nullptr;
     QP *qps_=nullptr;
     MR *mrs_=nullptr;
-    cx5::PointerIndex<MR> mr_index_{};
+    cx5::PointerIndex<MR,256> mr_index_{};
     // Context UARs whose mapping descriptors outlived the context, awaiting
     // DEALLOC_UAR once the last descriptor is gone (command lock held).
     UarLease *orphan_uars_=nullptr;
@@ -114,6 +116,9 @@ private:
     void put_context(Context *);
     void release_uar(Context *);
     void sweep_orphan_uars();
+    // Both require the command lock and the provider lock.
+    unsigned orphan_context_objects(Context *);
+    bool reclaim_orphans_locked();
     void forget(PD *);
     void forget(CQ *);
     void forget(QP *);

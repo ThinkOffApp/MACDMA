@@ -5,10 +5,12 @@
 const { Endpoint, Host } = require('./exec');
 const { TOOLS_DIR, PROVIDER_PATH } = require('./macinfo');
 const { normIp6 } = require('./parse');
+const { validateMode, validateTestSettings, readTrace } = require('./verification');
 
 const ARMS = {
   bf64: { MCDMA_CQ_MAP: '2', MCDMA_USER_POST: '1', MCDMA_USER_BF: '64' },   // userspace BlueFlame fast path
-  kernel: {}                                                               // kernel submission path
+  direct: { MCDMA_CQ_MAP: '2', MCDMA_USER_POST: '1', MCDMA_USER_BF: '0' },
+  kernel: { MCDMA_CQ_MAP: '0', MCDMA_USER_POST: '0', MCDMA_USER_BF: '0' }                                                               // kernel submission path
 };
 const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 
@@ -42,6 +44,7 @@ async function runTransferTest({ studioHost, link, settings, onProgress = () => 
   const sparkHost = new Host('ssh', link.sparkHost);
   if (!studioHost) studioHost = link.mac && link.mac.kind === 'ssh' ? new Host('ssh', link.mac.host) : new Host('local');
   try {
+    validateTestSettings(settings.test, latency);
     const macClient = await firstExecutable(studioHost, [settings.tools.macPeer, `${TOOLS_DIR}/native-verbs-peer`]);
     if (!macClient) throw new Error('native-verbs-peer not found on the Mac (install the driver package or set the path in Settings)');
     const sparkClient = await firstExecutable(sparkHost, [settings.tools.sparkPeer, `${TOOLS_DIR}/verbs-peer`, ...(link.spark.peerTools || [])]);
@@ -50,7 +53,7 @@ async function runTransferTest({ studioHost, link, settings, onProgress = () => 
     if (link.spark.gidIndex == null) throw new Error('the Spark port has no RoCE v2 GID');
     const provider = settings.tools.provider || PROVIDER_PATH;
     const arm = ARMS[settings.test.arm] ? settings.test.arm : 'bf64';
-    const env = { MCDMA_PAYLOAD_BYTES: String(settings.test.payload), MCDMA_PATH_MTU: String(settings.test.mtu) };
+    const env = { MCDMA_PAYLOAD_BYTES: String(settings.test.payload), MCDMA_PATH_MTU: String(settings.test.mtu), MCDMA_LATENCY_PROFILE: '0' };
     const macEnv = { IBV_DRIVERS: provider.replace(/-rdmav34\.so$/, ''), ...env, ...ARMS[arm] };
     const envText = (o) => Object.entries(o).map(([k, v]) => `${k}=${q(v)}`).join(' ');
     note(`Starting ${macClient.split('/').pop()} on the Mac (${link.studio.rdmaDevice}, ${arm} path)`);
@@ -81,7 +84,7 @@ async function runTransferTest({ studioHost, link, settings, onProgress = () => 
     const lat = { mac: {}, spark: {} };
     if (latency) {
       for (let i = 0; i < 2; i++) { const s = parseLatency(await mac.line(60000)); if (!s) throw new Error('missing Mac latency summary'); lat.mac[s.op] = s; }
-      await mac.line(10000); // LATENCY_TRACE path
+      result.traces = { mac: await readTrace(studioHost, await mac.line(10000), settings.test.payload) };
       note(`Mac: WRITE ${lat.mac.write.median} µs, READ ${lat.mac.read.median} µs (median)`);
     }
     note(`Spark-initiated ${p}-byte WRITE and READ`);
@@ -90,12 +93,16 @@ async function runTransferTest({ studioHost, link, settings, onProgress = () => 
     if (rev !== `PEER_RESULT forward=${p} write=1 read=1 reverse=${p}`) throw new Error(`Spark-initiated transfer or payload verification failed: ${rev || 'no reply'}`);
     if (latency) {
       for (let i = 0; i < 2; i++) { const s = parseLatency(await spark.line(60000)); if (!s) throw new Error('missing Spark latency summary'); lat.spark[s.op] = s; }
-      await spark.line(10000);
+      result.traces.spark = await readTrace(sparkHost, await spark.line(10000), settings.test.payload);
       note(`Spark: WRITE ${lat.spark.write.median} µs, READ ${lat.spark.read.median} µs (median)`);
     }
     mac.send('CHECKREVERSE');
     const chk = await mac.line(20000);
     if (chk !== `NATIVE_REVERSE verified=${p}`) throw new Error(`Mac did not observe the Spark payload: ${chk || 'no reply'}`);
+    if (latency) for (const side of ['mac', 'spark']) for (const op of ['write', 'read']) {
+      const row = lat[side][op];
+      if (!row || row.bytes !== p || row.samples !== 1000) throw new Error('Latency summary does not match the requested test');
+    }
     result.latency = latency ? lat : null;
     result.passed = true;
     note('Both directions verified byte for byte');
@@ -105,8 +112,12 @@ async function runTransferTest({ studioHost, link, settings, onProgress = () => 
   } finally {
     for (const ep of endpoints) {
       const code = await ep.stop();
-      if (code && result.passed) { errors.push(`${ep.host.label}: endpoint exit ${code}`); result.passed = false; }
+      if (code !== 0 && result.passed) { errors.push(`${ep.host.label}: endpoint exit ${code}`); result.passed = false; }
     }
+  }
+  if (result.passed) {
+    try { validateMode(endpoints[0].stderr || '', settings.test.arm); result.modeConfirmed = true; }
+    catch (e) { errors.push(e.message); }
   }
   result.passed = result.passed && !errors.length;
   return result;

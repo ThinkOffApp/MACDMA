@@ -1,6 +1,7 @@
 #include "fake_kernel_transport.hpp"
 #include <assert.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 namespace cx5_test { Simulation sim; }
 using namespace cx5_test;
@@ -44,6 +45,13 @@ IOMemoryDescriptor *Transport::bar_page_descriptor(uint64_t offset) {
     auto &page=sim.user_pages[offset];
     if (page.empty()) page.assign(16384,0);
     auto *descriptor=new IOMemoryDescriptor; descriptor->bytes=page.data(); return descriptor;
+}
+bool Transport::configure_pcie(uint32_t bytes,char *text,size_t text_bytes) {
+    if (!text || !text_bytes) return false;
+    if (bytes && (bytes<128 || bytes>4096 || (bytes&(bytes-1)))) return false;
+    ++sim.pcie_configs; sim.mrrs_requested=bytes; mrrs_applied_=bytes;
+    snprintf(text,text_bytes,"3:0:0 mps=512 mrrs=%u ro=1 aspm=0 | 2:1:0 mps=512 mrrs=512 ro=1 aspm=0",bytes?bytes:512u);
+    return true;
 }
 uint32_t Transport::read32(uint64_t) const { return 0; }
 bool Transport::write32(uint64_t,uint32_t) { return !sim.removed; }
@@ -89,6 +97,11 @@ bool Transport::execute(const uint8_t *in,size_t in_bytes,uint8_t *out,size_t ou
         break;
     }
     case 0x800: case 0x802: case 0x301: case 0x400: case 0x500: case 0x200: {
+        if (op==0x200) {
+            const bool relaxed=cx5::get_bits(in+16,64,0xd,1)==1;
+            if (relaxed && sim.refuse_relaxed_ordering) { last.completed=1; last.firmware_status=3; return false; }
+            if (relaxed) ++sim.relaxed_keys; else ++sim.strict_keys;
+        }
         const uint32_t id=sim.next_id++; sim.objects.insert(id);
         if (op==0x400) sim.cq_dma[id]=cx5::read_be64(in+0x110);
         if (op==0x500) sim.qp_dma[id]=cx5::read_be64(in+0x110);

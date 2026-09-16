@@ -43,8 +43,12 @@ static_assert(offsetof(AppleWC,pkey)==0x30 && offsetof(AppleWC,port)==0x34);
 // The enclosing native provider must hold its HCA lock for each call, validate
 // its Apple build, bind the CQ/QP to that device, and keep qp.client_context
 // pointing at the real ib_qp until all completions have been consumed.
-// Limited first data path: RC SEND/WRITE/READ, one SGE, signalled/polled work.
+// Data path: RC SEND/WRITE/READ with immediate data, fence and solicited
+// flags, up to three (SEND) or two (RDMA) scatter entries in one WQEBB; every
+// request is signalled and polled. Inline data is a userspace-posting feature.
 int apple_post_send(Hca &,HardwareQP &,bool signal_all,const AppleSendWR *,const AppleSendWR **bad);
+// Translates one public request into the hardware form, or sets `error`.
+bool apple_send_request(const AppleSendWR *,bool signal_all,cx5::SendRequest &,int &error);
 int apple_post_recv(Hca &,HardwareQP &,const AppleRecvWR *,const AppleRecvWR **bad);
 int apple_poll_cq(Hca &,HardwareCQ &,int maximum,AppleWC *);
 }

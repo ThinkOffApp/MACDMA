@@ -8,7 +8,8 @@ const crypto = require('crypto');
 function readManifest(dir) {
   try {
     const m = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
-    const archive = path.join(dir, m.archive || '');
+    if (!/^[A-Za-z0-9_.-]+\.tar\.gz$/.test(m.archive || '') || !/^[0-9a-fA-F-]{36}$/.test(m.uuid || '')) throw new Error('Invalid package identity');
+    const archive = path.join(dir, m.archive);
     if (!m.archive || !fs.existsSync(archive)) return { available: false, dir, error: 'manifest.json found but the archive is missing' };
     return {
       available: true, dir, archive, manifest: m, version: m.version || null, uuid: m.uuid || null,

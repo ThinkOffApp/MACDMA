@@ -16,8 +16,19 @@
 #define MCDMA_DBR_OFFSET 4096u      /* Doorbell record: RQ counter, SQ counter. */
 #define MCDMA_UAR_DOORBELL 0x800u   /* First BlueFlame register of a 4 KiB UAR. */
 #define MCDMA_WQE_WRITE 0x08u
+#define MCDMA_WQE_WRITE_IMM 0x09u
 #define MCDMA_WQE_SEND 0x0au
+#define MCDMA_WQE_SEND_IMM 0x0bu
 #define MCDMA_WQE_READ 0x10u
+/* Single-WQEBB limits shared with the kernel encoder (cx5_verbs.hpp). */
+#define MCDMA_MAX_SEND_SGE 3u
+#define MCDMA_MAX_RDMA_SGE 2u
+#define MCDMA_MAX_INLINE_SEND 44u
+#define MCDMA_MAX_INLINE_RDMA 28u
+#define MCDMA_SEND_FENCE 1u
+#define MCDMA_SEND_SIGNALED 2u
+#define MCDMA_SEND_SOLICITED 4u
+#define MCDMA_SEND_INLINE 8u
 /* mmap page numbers shared with the kernel provider (16 KiB units). The
  * write-combined UAR page is the same firmware UAR mapped with the cache
  * attribute the kernel's own BlueFlame page uses; the kernel grants it only
@@ -40,23 +51,76 @@ static inline void mcdma_put_be64(uint8_t *p,uint64_t v) { mcdma_put_be32(p,(uin
 static inline void mcdma_put_le32(uint8_t *p,uint32_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24); }
 static inline uint32_t mcdma_get_le32(const uint8_t *p) { return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24); }
 
-// Writes one 64-byte RC WQE (control segment, optional RDMA segment, one data
-// segment) at send-queue index `producer`; returns the first eight bytes as
-// the doorbell value, or 0 when the request is not encodable.
-static inline uint64_t mcdma_encode_send_wqe(uint8_t *queue_page,uint32_t qpn,uint32_t producer,uint8_t opcode,
-                                             uint64_t local,uint32_t lkey,uint32_t length,uint64_t remote,uint32_t rkey) {
-    const int rdma=opcode==MCDMA_WQE_WRITE || opcode==MCDMA_WQE_READ;
-    if (!queue_page || qpn>0xffffffu || !length || !lkey || (opcode!=MCDMA_WQE_SEND && !rdma) ||
-        (rdma && !rkey) || local>UINT64_MAX-length || (rdma && remote>UINT64_MAX-length)) return 0;
+// One send request in the hardware's terms, byte for byte the kernel
+// encoder's SendRequest (cx5_verbs.hpp): opcode, fence/solicited flags,
+// immediate (raw network-order bits), RDMA target, up to three scatter
+// entries or inline bytes that fit the single WQEBB.
+struct mcdma_send_sge { uint64_t address; uint32_t lkey,length; };
+struct mcdma_send_request {
+    uint8_t opcode,flags;
+    uint32_t immediate;
+    uint64_t remote; uint32_t rkey;
+    struct mcdma_send_sge sge[3]; unsigned sge_count;
+    const uint8_t *inline_data; unsigned inline_bytes;
+};
+static inline int mcdma_rdma_opcode(uint8_t opcode) {
+    return opcode==MCDMA_WQE_WRITE || opcode==MCDMA_WQE_WRITE_IMM || opcode==MCDMA_WQE_READ;
+}
+// Total payload bytes of an encodable request, else 0 (same rules as the kernel).
+static inline uint32_t mcdma_request_bytes(const struct mcdma_send_request *r) {
+    const int rdma=mcdma_rdma_opcode(r->opcode);
+    if (!rdma && r->opcode!=MCDMA_WQE_SEND && r->opcode!=MCDMA_WQE_SEND_IMM) return 0;
+    if (r->flags&~(MCDMA_SEND_FENCE|MCDMA_SEND_SIGNALED|MCDMA_SEND_SOLICITED)) return 0;
+    if (rdma && !r->rkey) return 0;
+    uint64_t total=0;
+    if (r->inline_data || r->inline_bytes) {
+        if (!r->inline_data || r->sge_count || r->opcode==MCDMA_WQE_READ) return 0;
+        if (r->inline_bytes<1 || r->inline_bytes>(rdma ? MCDMA_MAX_INLINE_RDMA : MCDMA_MAX_INLINE_SEND)) return 0;
+        total=r->inline_bytes;
+    } else {
+        if (r->sge_count<1 || r->sge_count>(rdma ? MCDMA_MAX_RDMA_SGE : MCDMA_MAX_SEND_SGE)) return 0;
+        for (unsigned i=0;i<r->sge_count;++i) {
+            if (!r->sge[i].length || !r->sge[i].lkey || r->sge[i].address>UINT64_MAX-r->sge[i].length) return 0;
+            total+=r->sge[i].length;
+        }
+    }
+    if (!total || total>0x7fffffffu || (rdma && r->remote>UINT64_MAX-total)) return 0;
+    return (uint32_t)total;
+}
+// Writes one 64-byte RC WQE at send-queue index `producer`; returns the first
+// eight bytes as the doorbell value, or 0 when the request is not encodable.
+static inline uint64_t mcdma_encode_send_request(uint8_t *queue_page,uint32_t qpn,uint32_t producer,
+                                                 const struct mcdma_send_request *r) {
+    const uint32_t total=mcdma_request_bytes(r);
+    if (!queue_page || qpn>0xffffffu || !total) return 0;
+    const int rdma=mcdma_rdma_opcode(r->opcode), inlined=r->inline_data!=NULL;
+    const unsigned data_units=inlined ? (4u+r->inline_bytes+15u)/16u : r->sge_count;
+    const unsigned ds=1u+(unsigned)rdma+data_units;
+    if (ds>4u) return 0;
     uint8_t *wqe=queue_page+MCDMA_SQ_OFFSET+(producer&31u)*64;
     memset(wqe,0,64);
-    mcdma_put_be32(wqe,((uint32_t)(uint16_t)producer<<8)|opcode);
-    mcdma_put_be32(wqe+4,(qpn<<8)|(rdma ? 3u : 2u));
-    wqe[11]=8; /* Completion requested, no event. */
-    const unsigned data=rdma ? 32u : 16u;
-    if (rdma) { mcdma_put_be64(wqe+16,remote); mcdma_put_be32(wqe+24,rkey); }
-    mcdma_put_be32(wqe+data,length); mcdma_put_be32(wqe+data+4,lkey); mcdma_put_be64(wqe+data+8,local);
+    mcdma_put_be32(wqe,((uint32_t)(uint16_t)producer<<8)|r->opcode);
+    mcdma_put_be32(wqe+4,(qpn<<8)|ds);
+    wqe[11]=(uint8_t)(8u|((r->flags&MCDMA_SEND_FENCE) ? 0x80u : 0u)|((r->flags&MCDMA_SEND_SOLICITED) ? 0x02u : 0u));
+    if (r->opcode==MCDMA_WQE_WRITE_IMM || r->opcode==MCDMA_WQE_SEND_IMM) memcpy(wqe+12,&r->immediate,4);
+    unsigned at=16;
+    if (rdma) { mcdma_put_be64(wqe+16,r->remote); mcdma_put_be32(wqe+24,r->rkey); at=32; }
+    if (inlined) {
+        mcdma_put_be32(wqe+at,0x80000000u|r->inline_bytes);
+        memcpy(wqe+at+4,r->inline_data,r->inline_bytes);
+    } else for (unsigned i=0;i<r->sge_count;++i,at+=16) {
+        mcdma_put_be32(wqe+at,r->sge[i].length); mcdma_put_be32(wqe+at+4,r->sge[i].lkey); mcdma_put_be64(wqe+at+8,r->sge[i].address);
+    }
     uint64_t doorbell; memcpy(&doorbell,wqe,8); return doorbell;
+}
+// One-entry convenience (WRITE, SEND, READ), kept for the original callers.
+static inline uint64_t mcdma_encode_send_wqe(uint8_t *queue_page,uint32_t qpn,uint32_t producer,uint8_t opcode,
+                                             uint64_t local,uint32_t lkey,uint32_t length,uint64_t remote,uint32_t rkey) {
+    if (opcode!=MCDMA_WQE_WRITE && opcode!=MCDMA_WQE_SEND && opcode!=MCDMA_WQE_READ) return 0;
+    struct mcdma_send_request r; memset(&r,0,sizeof(r));
+    r.opcode=opcode; r.remote=remote; r.rkey=rkey;
+    r.sge[0].address=local; r.sge[0].lkey=lkey; r.sge[0].length=length; r.sge_count=1;
+    return mcdma_encode_send_request(queue_page,qpn,producer,&r);
 }
 // Writes one 16-byte receive entry at receive-queue index `producer`.
 static inline int mcdma_encode_recv_wqe(uint8_t *queue_page,uint32_t producer,uint64_t address,uint32_t length,uint32_t lkey) {

@@ -51,7 +51,8 @@ public:
     bool alloc_pd(HardwareObject &pd);
     bool dealloc_pd(HardwareObject &pd);
     bool register_mr(HardwareObject &mr, uint32_t pd, uint64_t address, uint64_t length,
-                     const uint64_t *pages, size_t count, uint32_t access, uint32_t &key);
+                     const uint64_t *pages, size_t count, uint32_t access, uint32_t &key,
+                     unsigned log_page=12);
     bool deregister_mr(HardwareObject &mr, uint32_t key);
     bool create_cq(HardwareCQ &cq);
     bool destroy_cq(HardwareCQ &cq);
@@ -62,6 +63,9 @@ public:
     bool destroy_qp(HardwareQP &qp);
     bool reset_qp(HardwareQP &qp);
     bool transition(HardwareQP &qp, uint16_t opcode, const cx5::RCConnection &connection);
+    // Kernel posting never inlines: the request's bytes live in the posting
+    // process, which this path cannot read. Inline requests are refused.
+    bool post(HardwareQP &qp, uint64_t work_id, const cx5::SendRequest &request);
     bool post(HardwareQP &qp, uint64_t work_id, uint8_t opcode, uint64_t local, uint32_t lkey,
               uint32_t length, uint64_t remote, uint32_t rkey);
     bool receive(HardwareQP &qp, uint64_t work_id, uint64_t address, uint32_t length, uint32_t lkey);
@@ -89,6 +93,12 @@ public:
     // own BlueFlame path is enabled on this HCA (capability, bank size and
     // a working write-combined mapping of the same kind of page).
     bool user_blueflame_requested=false, user_blueflame=false;
+    // PCIe relaxed ordering on memory keys (tried per registration; a firmware
+    // refusal falls back to strict ordering and is reported) and acknowledgement
+    // requests on every packet instead of the vendor default of every 256.
+    bool relaxed_ordering_requested=false, relaxed_ordering_refused=false;
+    uint64_t relaxed_ordering_keys=0;
+    bool ack_request_every_packet=false;
 private:
     static constexpr uint32_t max_pages = 8192;
     struct Pool {
@@ -103,7 +113,7 @@ private:
     uint8_t next_key_ = 1;
     uint32_t uar_shift_ = 12;
     HardwareQP *qps_ = nullptr;
-    cx5::PointerIndex<HardwareQP> qp_index_{};
+    cx5::PointerIndex<HardwareQP,256> qp_index_{};
     void header(uint16_t opcode, uint16_t modifier = 0);
     bool call(size_t in_bytes = 16, size_t out_bytes = 16);
     bool simple(uint16_t opcode, uint16_t modifier = 0, size_t out_bytes = 16);

@@ -1,7 +1,7 @@
 {
   "name": "mcdma",
-  "version": "1.0.0",
-  "description": "Set up, verify and watch a Mac ↔ DGX Spark RDMA fabric on the MCDMA driver from the command line",
+  "version": "1.1.0",
+  "description": "Set up, verify and watch a Mac \u2194 DGX Spark RDMA fabric on the MCDMA driver from the command line",
   "bin": {
     "mcdma": "bin/mcdma.js"
   },
@@ -19,6 +19,8 @@
   "scripts": {
     "start": "node bin/mcdma.js",
     "install-cli": "node bin/mcdma.js install-cli",
-    "package": "tools/make-driver-package.sh"
-  }
+    "package": "tools/make-driver-package.sh",
+    "test": "node --test tests/*.test.js"
+  },
+  "driverVersion": "0.1.18"
 }

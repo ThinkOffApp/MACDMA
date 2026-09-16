@@ -3,6 +3,7 @@
 #include "apple_build.hpp"
 #include <IOKit/IOMessage.h>
 #include <libkern/c++/OSBoolean.h>
+#include <libkern/c++/OSNumber.h>
 
 OSDefineMetaClassAndStructors(MCDMACX5Native,IOService)
 struct MCDMACX5Native::State {
@@ -26,7 +27,7 @@ bool MCDMACX5Native::start(IOService *parent) {
     if (!state_) { IOService::stop(parent); return false; }
     auto &s=*state_;
     const char *stage="workloop";
-    parent->setProperty("MCDMANativeVersion","0.1.16");
+    parent->setProperty("MCDMANativeVersion","0.1.17");
     workloop_=IOWorkLoop::workLoop();
     timer_=IOTimerEventSource::timerEventSource(this,poll);
     if (!workloop_ || !timer_ || workloop_->addEventSource(timer_)) goto failure;
@@ -38,9 +39,26 @@ bool MCDMACX5Native::start(IOService *parent) {
     // Userspace BlueFlame additionally lets a user-post context map its UAR
     // page write-combined; granted only once kernel BlueFlame is enabled.
     s.hca.user_blueflame_requested=getProperty("MCDMAUserBlueFlame")==kOSBooleanTrue;
+    // Lab knobs for the tunnel-read cost: relaxed-ordering memory keys and
+    // per-packet acknowledgement requests; both default off.
+    s.hca.relaxed_ordering_requested=getProperty("MCDMARelaxedOrdering")==kOSBooleanTrue;
+    s.hca.ack_request_every_packet=getProperty("MCDMAAckRequestEveryPacket")==kOSBooleanTrue;
     if (!s.hca.attach_and_start(pci,this)) goto failure;
     setProperty("MCDMAUserQueues",s.hca.user_queues);
     setProperty("MCDMAUserBlueFlame",s.hca.user_blueflame);
+    setProperty("MCDMARelaxedOrdering",s.hca.relaxed_ordering_requested);
+    setProperty("MCDMAAckRequestEveryPacket",s.hca.ack_request_every_packet);
+    {
+        // PCIe control state of the device and the tunnel path, and the
+        // optional maximum read request size (0 leaves the platform value).
+        uint32_t mrrs=0;
+        if (auto *number=OSDynamicCast(OSNumber,getProperty("MCDMAMaxReadRequestBytes"))) mrrs=number->unsigned32BitValue();
+        char path[512];
+        const bool configured=s.hca.transport.configure_pcie(mrrs,path,sizeof(path));
+        setProperty("MCDMAPCIePath",configured ? path : "unavailable");
+        setProperty("MCDMAMaxReadRequestRequested",mrrs,32);
+        setProperty("MCDMAMaxReadRequestApplied",s.hca.transport.max_read_request_applied(),32);
+    }
     setProperty("MCDMAUarPageBytes",uint32_t(s.hca.user_queues?16384:4096),32);
     setProperty("MCDMABlueFlameCapable",s.hca.blueflame_capable);
     setProperty("MCDMABlueFlameEnabled",s.hca.blueflame_enabled);
@@ -97,6 +115,36 @@ failure:
     if (!cleanup()) retain_failed_state();
     IOService::stop(parent); return false;
 }
+IOReturn MCDMACX5Native::setProperties(OSObject *properties) {
+    auto *dictionary=OSDynamicCast(OSDictionary,properties);
+    if (!dictionary || !state_ || stopping_) return kIOReturnBadArgument;
+    auto &s=*state_;
+    bool handled=false;
+    if (auto *value=dictionary->getObject("MCDMARelaxedOrdering")) {
+        if (value!=kOSBooleanTrue && value!=kOSBooleanFalse) return kIOReturnBadArgument;
+        s.hca.relaxed_ordering_requested=value==kOSBooleanTrue;
+        s.hca.relaxed_ordering_refused=false; s.hca.relaxed_ordering_keys=0;
+        setProperty("MCDMARelaxedOrdering",s.hca.relaxed_ordering_requested);
+        setProperty("MCDMARelaxedOrderingRefused",false); setProperty("MCDMARelaxedOrderingKeys",uint64_t(0),64);
+        handled=true;
+    }
+    if (auto *value=dictionary->getObject("MCDMAAckRequestEveryPacket")) {
+        if (value!=kOSBooleanTrue && value!=kOSBooleanFalse) return kIOReturnBadArgument;
+        s.hca.ack_request_every_packet=value==kOSBooleanTrue;
+        setProperty("MCDMAAckRequestEveryPacket",s.hca.ack_request_every_packet);
+        handled=true;
+    }
+    if (auto *value=OSDynamicCast(OSNumber,dictionary->getObject("MCDMAMaxReadRequestBytes"))) {
+        const uint32_t mrrs=value->unsigned32BitValue();
+        char path[512];
+        if (!s.hca.transport.configure_pcie(mrrs,path,sizeof(path))) return kIOReturnUnsupported;
+        setProperty("MCDMAPCIePath",path);
+        setProperty("MCDMAMaxReadRequestRequested",mrrs,32);
+        setProperty("MCDMAMaxReadRequestApplied",s.hca.transport.max_read_request_applied(),32);
+        handled=true;
+    }
+    return handled ? kIOReturnSuccess : kIOReturnUnsupported;
+}
 void MCDMACX5Native::poll(OSObject *owner,IOTimerEventSource *timer) {
     auto *self=OSDynamicCast(MCDMACX5Native,owner);
     if (!self || self->stopping_ || !self->state_) return;
@@ -113,6 +161,10 @@ void MCDMACX5Native::poll(OSObject *owner,IOTimerEventSource *timer) {
         s.active=active; s.network.link(active);
         self->setProperty("MCDMAPortActive",active);
         s.verbs.dispatch_port_event(active);
+    }
+    if (s.hca.relaxed_ordering_requested) {
+        self->setProperty("MCDMARelaxedOrderingRefused",s.hca.relaxed_ordering_refused);
+        self->setProperty("MCDMARelaxedOrderingKeys",s.hca.relaxed_ordering_keys,64);
     }
     timer->setTimeoutMS(500);
 }

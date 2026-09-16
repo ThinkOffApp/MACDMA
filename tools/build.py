@@ -63,6 +63,9 @@ if len(sys.argv)>1 and sys.argv[1]=='test':
     run([sys.executable,'tests/test_native_observer_marker.py'])
     run([sys.executable,'tests/test_native_endpoint.py'])
     run([sys.executable,'-B','tests/test_restore_rdma.py'])
+    run([sys.executable,'-B','tests/test_lifecycle_torture.py'])
+    run([sys.executable,'-B','tests/test_bw_tools.py'])
+    run([sys.executable,'-B','tests/test_bw_guard.py'])
     sys.exit(0)
 if len(sys.argv)>1 and sys.argv[1]=='native':
     ms=sdk('macosx')
@@ -79,6 +82,16 @@ if len(sys.argv)>1 and sys.argv[1]=='native':
          'client/cq_map_check.c','-lrdma','-o',BUILD/'cq-map-check'])
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
          'client/user_queue_check.c','-lrdma','-o',BUILD/'user-queue-check'])
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
+         'client/lifecycle_client.c','-lrdma','-o',BUILD/'lifecycle-client'])
+    # Sustained-bandwidth benchmark; the same source builds on the Linux peer with -libverbs.
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
+         'benchmarks/mcdma_bw.c','-lrdma','-o',BUILD/'mcdma-bw'])
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
+         'client/mcdma_set.c','-framework','IOKit','-framework','CoreFoundation','-o',BUILD/'mcdma-set'])
+    # GPU keep-alive: holds the platform out of its idle power state during
+    # latency-critical RDMA (see docs/gpu-keepalive.md).
+    run(['xcrun','swiftc','-O','-sdk',ms,'client/fabric_keepalive.swift','-o',BUILD/'fabric-keepalive'])
     native_sources=['native/apple_registration.cpp','native/kernel_transport.cpp',
                     'native/kernel_transport_access.cpp',
                     'native/kernel_hca.cpp','native/apple_umem.cpp','native/registered_memory.cpp',
@@ -111,8 +124,8 @@ if len(sys.argv)>1 and sys.argv[1]=='native':
     if 'doMapEP8ipc_port' in imports or 'doUnmapEP8ipc_port' in imports:
         sys.exit('Incompatible public-SDK VM-map aliases remain in native vtable imports')
     plist(kext/'Contents/Info.plist',{
-        'CFBundleInfoDictionaryVersion':'6.0','CFBundleVersion':'0.1.16',
-        'CFBundleShortVersionString':'0.1.16','CFBundleIdentifier':'org.mcdma.cx5.native',
+        'CFBundleInfoDictionaryVersion':'6.0','CFBundleVersion':'0.1.18',
+        'CFBundleShortVersionString':'0.1.18','CFBundleIdentifier':'org.mcdma.cx5.native',
         'CFBundleExecutable':'MCDMACX5Native','CFBundleName':'MCDMA native CX5',
         'CFBundlePackageType':'KEXT',
         'OSBundleLibraries':{'com.apple.kpi.bsd':'27.0.0',
@@ -126,7 +139,8 @@ if len(sys.argv)>1 and sys.argv[1]=='native':
             'CFBundleIdentifier':'org.mcdma.cx5.native','IOClass':'MCDMACX5Native',
             'IOProviderClass':'IOPCIDevice','IOPCIMatch':'0x101915b3',
             'IOPCITunnelCompatible':True,'IOProbeScore':20000,
-            'MCDMALabEnabled':False,'MCDMAUserQueues':False,'MCDMAUserBlueFlame':False}}})
+            'MCDMALabEnabled':False,'MCDMAUserQueues':False,'MCDMAUserBlueFlame':False,
+            'MCDMARelaxedOrdering':False,'MCDMAAckRequestEveryPacket':False,'MCDMAMaxReadRequestBytes':0}}})
     print('BUILT unsigned native kernel bundle (-O2, general registers only), provider and checker; '
           'lab personality is disabled, live loading and verbs transfers remain unverified')
     sys.exit(0)

@@ -1,4 +1,5 @@
 'use strict';
+const { compareVersions } = require('./version');
 // Turns the probe results into the setup checklist. Pure: no I/O.
 const STATUS_RANK = { fail: 0, warn: 1, todo: 2, unknown: 3, ok: 4 };
 const worst = (list) => list.reduce((w, s) => (STATUS_RANK[s] < STATUS_RANK[w] ? s : w), 'ok');
@@ -11,9 +12,10 @@ function systemCheck(studio, pkg) {
   if (!studio || !studio.ok) return { id: 'system', title: 'macOS & security', status: 'unknown', summary: studio && studio.error ? studio.error : 'Not checked yet', items: [], actions: [] };
   const items = [], actions = [];
   const need = (pkg && pkg.available && pkg.requiresMacOSMajor) || (studio.kext && studio.kext.requiresMacOSMajor) || null;
-  const osOk = need ? studio.os.major >= need : true;
+  const requiredBuild = pkg && pkg.available && pkg.manifest && pkg.manifest.requires && pkg.manifest.requires.macos_build;
+  const osOk = requiredBuild ? studio.os.build === requiredBuild : need ? studio.os.major >= need : true;
   items.push(item('macOS', `${studio.os.version} (${studio.os.build})`, osOk ? 'ok' : 'fail',
-    need && !osOk ? `This driver build is linked against the macOS ${need} kernel and cannot load on ${studio.os.version}.` : need ? `Driver build requires macOS ${need} or later.` : null));
+    requiredBuild ? `This package requires macOS build ${requiredBuild}.` : need && !osOk ? `This driver build is linked against the macOS ${need} kernel and cannot load on ${studio.os.version}.` : need ? `Driver build requires macOS ${need} or later.` : null));
   items.push(item('Mac', `${studio.chip.brand || studio.chip.arch}${studio.chip.memoryGiB ? ` · ${studio.chip.memoryGiB} GB` : ''}`, studio.appleSilicon ? 'ok' : 'fail', studio.appleSilicon ? null : 'MCDMA needs an Apple silicon Mac.'));
   const sip = studio.sip.state;
   let polStatus, polHint;
@@ -67,7 +69,7 @@ function driverCheck(studio, pkg) {
     items.push(item('Installed', 'not installed', 'todo', 'Install copies the kernel extension, the libibverbs provider and the tools, then asks macOS to load the driver.'));
     if (pkg && pkg.available && local) actions.push(action('installDriver', 'mcdma driver install', { kind: 'admin', primary: true }));
   } else {
-    const newer = pkgV && pkgV !== k.version;
+    const newer = pkgV && compareVersions(pkgV, k.version) === 1;
     items.push(item('Installed', `${k.version} · ${k.signature}${k.sha256 ? ` · ${k.sha256.slice(0, 8)}…` : ''}`, newer ? 'warn' : 'ok', newer ? `The package is ${pkgV}; ${k.version} is installed.` : null));
     if (newer && local && pkg.available) actions.push(action('installDriver', `mcdma driver install (update to ${pkgV})`, { kind: 'admin', primary: true }));
   }
@@ -89,7 +91,7 @@ function driverCheck(studio, pkg) {
   }
   items.push(item('libibverbs provider', pr.present ? `installed${pr.confPresent ? ' · registered' : ' · not registered'}${pr.sha256 ? ` · ${pr.sha256.slice(0, 8)}…` : ''}` : 'missing', pr.present && pr.confPresent ? 'ok' : 'todo',
     pr.present && pr.confPresent ? null : 'The userspace provider (libmcdma-rdmav34.so) and its /etc/libibverbs.d entry are installed together with the driver.'));
-  if (k.installed && (!pr.present || !pr.confPresent) && local && pkg && pkg.available) actions.push(action('installDriver', 'mcdma driver install (repair)', { kind: 'admin' }));
+  if (k.installed && (!pr.present || !pr.confPresent) && local && pkg && pkg.available && [0, 1].includes(compareVersions(pkgV, k.version))) actions.push(action('installDriver', 'mcdma driver install (repair)', { kind: 'admin' }));
   const regs = studio.registry;
   if (l.loaded) {
     if (!regs.length) items.push(item('Driver instances', 'none attached', 'fail', 'The driver is loaded but not attached to any ConnectX function.'));

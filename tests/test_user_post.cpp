@@ -17,6 +17,29 @@ int main() {
         assert(doorbell && !memcmp(page+MCDMA_SQ_OFFSET+(producer&31u)*64,expected,64) && !memcmp(&doorbell,expected,8));
         ++checks;
     }
+    // Full requests are byte-identical too: immediate, flags, lists, inline.
+    {
+        cx5::SendRequest k; struct mcdma_send_request u; memset(&u,0,sizeof(u));
+        k.opcode=cx5::wqe_write_imm; k.flags=cx5::send_flag_fence; k.immediate=0x44332211; k.remote=0x300000000ull; k.rkey=5;
+        k.sge[0]={0x100000000ull,7,4000}; k.sge[1]={0x100001000ull,8,96}; k.sge_count=2;
+        u.opcode=MCDMA_WQE_WRITE_IMM; u.flags=MCDMA_SEND_FENCE; u.immediate=0x44332211; u.remote=0x300000000ull; u.rkey=5;
+        u.sge[0].address=0x100000000ull; u.sge[0].lkey=7; u.sge[0].length=4000;
+        u.sge[1].address=0x100001000ull; u.sge[1].lkey=8; u.sge[1].length=96; u.sge_count=2;
+        uint8_t expected[64];
+        assert(cx5::encode_send_request(expected,64,0x123456,40,k));
+        const uint64_t doorbell=mcdma_encode_send_request(page,0x123456,40,&u);
+        assert(doorbell && !memcmp(page+MCDMA_SQ_OFFSET+(40&31u)*64,expected,64) && !memcmp(&doorbell,expected,8));
+        assert(mcdma_request_bytes(&u)==4096 && cx5::request_bytes(k)==4096);
+        const uint8_t payload[28]="twenty-eight inline bytes..";
+        k={}; k.opcode=cx5::wqe_send; k.flags=cx5::send_flag_solicited; k.inline_data=payload; k.inline_bytes=28;
+        memset(&u,0,sizeof(u)); u.opcode=MCDMA_WQE_SEND; u.flags=MCDMA_SEND_SOLICITED; u.inline_data=payload; u.inline_bytes=28;
+        assert(cx5::encode_send_request(expected,64,0x123456,41,k));
+        assert(mcdma_encode_send_request(page,0x123456,41,&u) && !memcmp(page+MCDMA_SQ_OFFSET+(41&31u)*64,expected,64));
+        u.inline_bytes=45; assert(!mcdma_encode_send_request(page,0x123456,41,&u));
+        u.opcode=MCDMA_WQE_READ; u.inline_bytes=8; assert(!mcdma_encode_send_request(page,0x123456,41,&u));
+        u.flags=MCDMA_SEND_INLINE; assert(!mcdma_request_bytes(&u));
+        ++checks;
+    }
     // Rejections mirror the kernel encoder.
     assert(!mcdma_encode_send_wqe(page,0x123456,0,MCDMA_WQE_WRITE,0x1000,7,0,0x2000,9));
     assert(!mcdma_encode_send_wqe(page,0x123456,0,MCDMA_WQE_WRITE,0x1000,0,64,0x2000,9));

@@ -69,11 +69,16 @@ IOReturn UserMemory::pin(ib_ucontext *context,uint64_t start,uint64_t length,uin
     umem_=reinterpret_cast<ib_umem *>(pin); start_=start; length_=length;
     ++pins; last_pin_context=context; return 0;
 }
-IOReturn UserMemory::pages_4k(uint64_t *pages,size_t capacity,size_t &count) const {
-    count=size_t(((start_&4095)+length_+4095)/4096);
-    assert(umem_ && count<=capacity);
-    for (size_t i=0;i<count;++i) pages[i]=reinterpret_cast<Pin *>(umem_)->dma+i*4096;
-    return 0;
+IOReturn UserMemory::translate(uint64_t alias,uint64_t *pages,size_t capacity,size_t &count,unsigned &log_page) const {
+    // One device-contiguous mapping starting at the first 4 KiB page, exactly
+    // what the IOMMU hands the kernel for one pinned range.
+    assert(umem_);
+    const cx5::Segment segment{start_&~uint64_t(4095),reinterpret_cast<Pin *>(umem_)->dma,
+                               ((start_&4095)+length_+4095)&~uint64_t(4095)};
+    log_page=cx5::choose_log_page(&segment,1,start_,length_,alias,capacity);
+    if (!log_page) { count=0; return kIOReturnNoSpace; }
+    count=cx5::page_list(&segment,1,start_,length_,log_page,pages,capacity);
+    return count ? kIOReturnSuccess : kIOReturnUnsupported;
 }
 void UserMemory::release() {
     assert(umem_ && pins); delete reinterpret_cast<Pin *>(umem_); umem_=nullptr; --pins;
@@ -209,18 +214,35 @@ void callbacks_and_protection() {
     wr.base.next=nullptr; wr.base.opcode=4; wr.base.id=0x200000006ull;
     assert(AppleProvider::post_send(s.qp,&wr.base,&bad)==0 && !bad);
     emit(s,1,1,13,0x13); assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.status==10 && wc.id==wr.base.id);
-    // Exact PD ownership: a valid key from one PD is not valid in another QP.
+    // Exact PD ownership: a valid key from one PD is not valid in another QP,
+    // and every entry of a scatter list is checked.
     void *other_mr=nullptr;
     assert(AppleProvider::register_mr(other.pd,0x1000000,4096,0x1000000,7,s.udata,&other_mr)==0);
     sge.lkey=get<uint32_t>(other_mr,0x10);
     assert(AppleProvider::post_send(s.qp,&wr.base,&bad)==-EACCES);
+    {
+        AppleSGE pair[2]={{0x1000000,2048,get<uint32_t>(s.mr,0x10)},{0x1001000,2048,get<uint32_t>(other_mr,0x10)}};
+        AppleRDMAWR two{{nullptr,0x300000009ull,pair,2,1,2,0x0d0c0b0a},0x88880000,0x123400,0};
+        assert(AppleProvider::post_send(s.qp,&two.base,&bad)==-EACCES && bad==&two.base);
+        pair[1].lkey=pair[0].lkey; pair[1].address=0x1000800; pair[1].length=7000; // Past the registration.
+        assert(AppleProvider::post_send(s.qp,&two.base,&bad)==-EACCES);
+        pair[1].length=2048; pair[1].address=0x1001000;
+        assert(AppleProvider::post_send(s.qp,&two.base,&bad)==0 && !bad);
+        emit(s,2,2); assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.id==two.base.id && wc.opcode==1 && wc.status==0);
+    }
     assert(AppleProvider::deregister_mr(other_mr,s.udata)==0);
     // A cached/indexed lkey must never retain a freed registration node.
     assert(AppleProvider::post_send(s.qp,&wr.base,&bad)==-EACCES);
     sge.lkey=get<uint32_t>(s.mr,0x10);
     AppleRecvWR recv{nullptr,0x400000007ull,&sge,1}; const AppleRecvWR *bad_recv=nullptr;
     assert(AppleProvider::post_recv(s.qp,&recv,&bad_recv)==0 && !bad_recv);
-    emit(s,2,0,2); assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.id==recv.id);
+    emit(s,3,0,2); assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.id==recv.id && wc.flags==0);
+    // A SEND with immediate reaches the application with the raw bits.
+    recv.id=0x400000008ull;
+    assert(AppleProvider::post_recv(s.qp,&recv,&bad_recv)==0);
+    emit(s,4,1,3); memcpy(sim.maps.at(sim.cq_dma.begin()->second)+(4&31)*64+40,"\x0a\x0b\x0c\x0d",4);
+    assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.id==recv.id && wc.opcode==128 && wc.flags==2 && wc.bytes==4096);
+    assert(!memcmp(&wc.immediate,"\x0a\x0b\x0c\x0d",4));
     assert(AppleProvider::notify_cq(s.cq,0)==-EOPNOTSUPP);
     assert(AppleProvider::dma_mr(s.pd,7,&wrong)==-EOPNOTSUPP && !wrong);
     // RESET stops DMA and permits reuse of the same QP, including WR counter 0.
@@ -228,7 +250,7 @@ void callbacks_and_protection() {
     assert(AppleProvider::modify_qp(s.qp,reset_attr,1,s.udata)==0);
     s.connect(hca,6,3,37);
     wr.base.opcode=2; assert(AppleProvider::post_send(s.qp,&wr.base,&bad)==0);
-    emit(s,3,0); assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.id==wr.base.id);
+    emit(s,5,0); assert(AppleProvider::poll_cq(s.cq,1,&wc)==1 && wc.id==wr.base.id);
     assert(AppleProvider::dealloc_pd(other.pd,s.udata)==0);
     AppleProvider::dealloc_context(other.context);
     s.close();
@@ -473,15 +495,17 @@ static void context_quota_fairness() {
     reset(); Hca hca; AppleProvider provider;
     assert(hca.start() && provider.prepare(hca));
     Session a,b; a.open(provider); b.open(provider);
-    alignas(8) uint8_t pds[17][0x58]{};
-    for (unsigned i=0;i<16;++i) {
+    constexpr unsigned limit=AppleProvider::context_resource_limit;
+    alignas(8) static uint8_t pds[limit+1][0x58];
+    memset(pds,0,sizeof(pds));
+    for (unsigned i=0;i<limit;++i) {
         put(pds[i],8,provider.device()); assert(!AppleProvider::alloc_pd(pds[i],a.udata));
     }
-    put(pds[16],8,provider.device());
-    assert(AppleProvider::alloc_pd(pds[16],a.udata)==-ENOMEM);
-    assert(!AppleProvider::alloc_pd(pds[16],b.udata));
-    assert(!AppleProvider::dealloc_pd(pds[16],b.udata));
-    for (unsigned i=0;i<16;++i) assert(!AppleProvider::dealloc_pd(pds[i],a.udata));
+    put(pds[limit],8,provider.device());
+    assert(AppleProvider::alloc_pd(pds[limit],a.udata)==-ENOMEM);
+    assert(!AppleProvider::alloc_pd(pds[limit],b.udata));
+    assert(!AppleProvider::dealloc_pd(pds[limit],b.udata));
+    for (unsigned i=0;i<limit;++i) assert(!AppleProvider::dealloc_pd(pds[i],a.udata));
     AppleProvider::dealloc_context(a.context); AppleProvider::dealloc_context(b.context);
     assert(provider.dispose() && hca.stop());
     puts("PASS one context cannot consume the full device PD quota");
@@ -491,7 +515,9 @@ static void remaining_context_quotas() {
         reset(); Hca hca; AppleProvider provider;
         assert(hca.start() && provider.prepare(hca));
         Session a,b; a.open(provider); b.open(provider); a.resources(); b.resources();
-        alignas(8) uint8_t cores[16][0x120]{}; void *mrs[16]{};
+        constexpr unsigned limit=AppleProvider::context_resource_limit;
+        alignas(8) static uint8_t cores[limit][0x120]; static void *mrs[limit];
+        memset(cores,0,sizeof(cores)); memset(mrs,0,sizeof(mrs));
         auto create=[&](unsigned index,Session &owner) {
             put(cores[index],0,provider.device());
             if(kind==0) { uint32_t attr[3]={31,0,0}; return AppleProvider::create_cq(cores[index],attr,owner.udata); }
@@ -507,22 +533,27 @@ static void remaining_context_quotas() {
                    kind==1 ? AppleProvider::destroy_qp(cores[index],owner.udata) :
                              AppleProvider::deregister_mr(mrs[index],owner.udata);
         };
-        for(unsigned i=0;i<15;++i) assert(!create(i,a));
-        assert(create(15,a)==-ENOMEM && !create(15,b));
-        assert(!destroy(15,b)); for(unsigned i=0;i<15;++i) assert(!destroy(i,a));
+        for(unsigned i=0;i<limit-1;++i) assert(!create(i,a));
+        assert(create(limit-1,a)==-ENOMEM && !create(limit-1,b));
+        assert(!destroy(limit-1,b)); for(unsigned i=0;i<limit-1;++i) assert(!destroy(i,a));
         a.close(); b.close(); assert(provider.dispose() && hca.stop());
     }
-    // Both quotas remain charged through context/provider destruction, while
-    // one context's eight-map budget leaves room for another context.
+    // Both quotas remain charged through context/provider destruction: full
+    // per-context budgets fill the device quota, the next context gets only
+    // the remainder, and a released mapping makes room again.
     reset(); Hca hca; AppleProvider provider; assert(hca.start() && provider.prepare(hca));
-    Session sessions[9]; std::vector<IOMemoryDescriptor *> held;
-    for(unsigned c=0;c<9;++c) {
-        auto &session=sessions[c]; session.open(provider);
+    constexpr unsigned per_context=AppleProvider::context_mapping_limit, device_quota=CQMappingQuota::limit;
+    constexpr unsigned full=device_quota/per_context, remainder=device_quota-full*per_context;
+    static_assert(remainder>0 && remainder<per_context);
+    static Session sessions[full+1]; std::vector<IOMemoryDescriptor *> held;
+    for(unsigned c=0;c<=full;++c) {
+        auto &session=sessions[c]; session=Session{}; session.open(provider);
         uint32_t attr[3]={31,0,0}; assert(!AppleProvider::create_cq(session.cq,attr,session.udata));
-        for(unsigned n=0;n<(c<8?8:1);++n) {
+        const unsigned maps=c<full?per_context:remainder+1;
+        for(unsigned n=0;n<maps;++n) {
             alignas(8) uint8_t vma[0xb0]{}; put<uint64_t>(vma,8,MCDMA_CQ_MAP_BYTES);
             put<uint64_t>(vma,0x10,18);put<uint64_t>(vma,0x18,1);put<uint64_t>(vma,0x20,0x20000);
-            if(c==8) {
+            if(c==full && n==remainder) {
                 assert(AppleProvider::mmap(session.context,vma)==-ENOMEM);
                 held.front()->release();held.erase(held.begin());
             }
@@ -533,7 +564,7 @@ static void remaining_context_quotas() {
         assert(!AppleProvider::destroy_cq(session.cq,session.udata));
         AppleProvider::dealloc_context(session.context);
     }
-    assert(provider.dispose() && hca.stop() && sim.buffers==9);
+    assert(provider.dispose() && hca.stop() && sim.buffers==full+1);
     for(auto *mapping:held) mapping->release();assert(!sim.buffers);
     puts("PASS per-context CQ/QP/MR fairness and retained per-context/global mapping quotas");
 }
@@ -669,7 +700,131 @@ static void user_blueflame_mappings() {
     assert(p2.reclaim_orphans() && p2.dispose() && granted.stop() && !sim.buffers && sim.objects.empty());
     puts("PASS userspace BlueFlame mappings: personality gate, write-combined attribute forwarded for the UAR page only, capability block per QP");
 }
+static void large_registration() {
+    // Registrations are bounded by what the mapping can describe, not by a
+    // fixed byte limit: a device-contiguous 64 MiB range takes four 16 MiB
+    // pages, an HCA address that only shares the 16 KiB offset forces 16 KiB
+    // pages, and a range that then needs too many entries is refused.
+    reset(); Hca hca; AppleProvider provider; assert(hca.start() && provider.prepare(hca));
+    Session s; s.open(provider); assert(AppleProvider::alloc_pd(s.pd,s.udata)==0);
+    void *big=nullptr;
+    assert(AppleProvider::register_mr(s.pd,0x1000000,64<<20,0x1000000,7,s.udata,&big)==0 && big);
+    assert(cx5::get_bits(sim.command.data()+16,64,0x1da,6)==24 && cx5::read_be32(sim.command.data()+0x60)==2);
+    assert(cx5::read_be64(sim.command.data()+0x110)==0x90000000 && cx5::read_be64(sim.command.data()+0x110+24)==0x93000000);
+    assert(cx5::read_be64(sim.command.data()+16+0x80/8)==0x1000000 && cx5::read_be64(sim.command.data()+16+0xc0/8)==(64<<20));
+    assert(AppleProvider::deregister_mr(big,s.udata)==0);
+    void *aliased=nullptr;
+    assert(AppleProvider::register_mr(s.pd,0x1000000,1<<20,0x1004000,7,s.udata,&aliased)==0 && aliased);
+    assert(cx5::get_bits(sim.command.data()+16,64,0x1da,6)==14 && cx5::read_be32(sim.command.data()+0x60)==32);
+    assert(AppleProvider::deregister_mr(aliased,s.udata)==0);
+    void *refused=nullptr;
+    assert(AppleProvider::register_mr(s.pd,0x1000000,64<<20,0x1004000,7,s.udata,&refused)==-EIO && !refused);
+    assert(AppleProvider::register_mr(s.pd,0x1000000,max_mr_bytes+1,0x1000000,7,s.udata,&refused)==-EINVAL && !refused);
+    assert(provider.orphan_count()==0 && pins==0);
+    alignas(8) uint8_t attr[0x130]{};
+    assert(AppleProvider::query_device(provider.device(),attr,nullptr)==0 && get<uint64_t>(attr,0x10)==max_mr_bytes);
+    assert(AppleProvider::dealloc_pd(s.pd,s.udata)==0); AppleProvider::dealloc_context(s.context);
+    assert(provider.dispose() && hca.stop() && !sim.buffers);
+    puts("PASS large registrations: page size chosen from the mapping, HCA-address alias respected, oversize refused");
+}
+static void process_death_teardown() {
+    // A process dies holding a connected kernel-posted QP whose WRITE is still
+    // in flight (so its MR is busy) and a second context with mapped UAR,
+    // queue and CQ pages. The core's cleanup rounds are refused, it frees its
+    // wrappers regardless and deallocates the contexts. The provider must turn
+    // the abandoned objects into orphans, keep the retained mappings valid,
+    // let a later process reuse the same wrapper addresses and recover the
+    // hardware once the firmware answers again.
+    reset(); Hca hca; hca.user_queues_requested=true; AppleProvider provider;
+    assert(hca.start() && hca.user_queues && provider.prepare(hca));
+    Session k,s; k.open(provider); s.open(provider);
+    alignas(8) uint8_t vma[0xb0]{};
+    auto map=[&](Session &who,uint64_t page,uint64_t prot) {
+        memset(vma,0,sizeof(vma)); put<uint64_t>(vma,8,MCDMA_CQ_MAP_BYTES); put<uint64_t>(vma,0x10,page);
+        put<uint64_t>(vma,0x18,prot); put<uint64_t>(vma,0x20,0x20000);
+        return AppleProvider::mmap(who.context,vma);
+    };
+    assert(map(s,AppleProvider::uar_page_number,3)==0);
+    auto *uar_map=get<IOMemoryDescriptor *>(vma,0x28); assert(uar_map);
+    k.resources(); k.connect(hca);
+    s.resources(); s.connect(hca);
+    assert(map(s,AppleProvider::queue_page_base+get<uint32_t>(s.qp,0xc0),3)==0);
+    auto *queue_map=get<IOMemoryDescriptor *>(vma,0x28); assert(queue_map);
+    assert(map(s,18,1)==0);
+    auto *cq_map=get<IOMemoryDescriptor *>(vma,0x28); assert(cq_map && mcdma_cq_observe(cq_map->bytes)==0);
+    AppleSGE sge{0x1000000,4096,get<uint32_t>(k.mr,0x10)};
+    AppleRDMAWR wr{{nullptr,5,&sge,1,0,0,0},0x8000000,9,0}; const AppleSendWR *bad=nullptr;
+    assert(AppleProvider::post_send(k.qp,&wr.base,&bad)==0);
+    // An ordinary close round: the busy MR and the referenced CQ are refused
+    // until the QP is gone, which the core retries.
+    assert(AppleProvider::deregister_mr(k.mr,k.udata)==-EBUSY);
+    assert(AppleProvider::destroy_cq(k.cq,k.udata)==-EBUSY);
+    // The firmware now refuses DESTROY_QP, so the core's forced round fails
+    // for everything behind it. It gives up and frees its wrappers anyway.
+    sim.fail_opcode=0x501;
+    assert(AppleProvider::destroy_qp(k.qp,k.udata)==-EBUSY);
+    // The refused destroy still reset the QP, so its MR is no longer busy. A
+    // process that never deregistered it leaves it behind as well.
+    assert(AppleProvider::destroy_cq(k.cq,k.udata)==-EBUSY);
+    assert(AppleProvider::dealloc_pd(k.pd,k.udata)==-EBUSY);
+    assert(AppleProvider::destroy_qp(s.qp,s.udata)==-EBUSY);
+    assert(AppleProvider::destroy_cq(s.cq,s.udata)==-EBUSY);
+    assert(AppleProvider::dealloc_pd(s.pd,s.udata)==-EBUSY);
+    assert(AppleProvider::deregister_mr(s.mr,s.udata)==0); s.mr=nullptr;
+    AppleProvider::dealloc_context(k.context); k.mr=nullptr; // The provider freed the wrapper.
+    AppleProvider::dealloc_context(s.context);
+    // Deallocation reclaimed what it could at once: the reset QP freed k's
+    // MR, while the refused QPs keep their CQs and PDs, and s's UAR page is
+    // still mapped.
+    assert(provider.orphan_count()==6 && provider.orphan_uar_count()==1);
+    assert(mcdma_cq_observe(cq_map->bytes)==-1); // A retained mapping sees the invalidation.
+    // The next process gets the same wrapper addresses from the core; none of
+    // them may be mistaken for the dead process's objects.
+    k.open(provider); k.resources(); k.connect(hca);
+    assert(provider.orphan_count()==6);
+    // With the firmware answering again the orphans are reclaimed; the UAR
+    // page stays leased while its mapping is still held.
+    sim.fail_opcode=0;
+    assert(!provider.reclaim_orphans() && provider.orphan_count()==0 && provider.orphan_uar_count()==1);
+    uar_map->release();
+    assert(provider.reclaim_orphans() && provider.orphan_uar_count()==0);
+    AppleSGE live{0x1000000,4096,get<uint32_t>(k.mr,0x10)};
+    AppleRDMAWR ok{{nullptr,6,&live,1,0,0,0},0x8000000,9,0};
+    assert(AppleProvider::post_send(k.qp,&ok.base,&bad)==0);
+    alignas(8) uint8_t reset_attr[0xc8]{};
+    assert(AppleProvider::modify_qp(k.qp,reset_attr,1,k.udata)==0);
+    k.close(); queue_map->release(); cq_map->release();
+    assert(provider.dispose() && hca.stop() && !sim.buffers && !pins && sim.objects.empty());
+    puts("PASS process-death teardown: refused destroys become orphans, wrapper addresses are reusable, retained mappings stay valid, hardware is reclaimed");
+}
+static void review_immediate_orphan_reclaim() {
+    // Cleanup can be refused once and then succeed during dealloc_context.
+    // Reclaim must not free the context while that callback still uses it.
+    for (unsigned kind=0;kind<3;++kind) {
+        reset(); Hca hca; AppleProvider provider;
+        assert(hca.start() && provider.prepare(hca));
+        Session s; s.open(provider);
+        if (kind==2) s.resources();
+        else if (kind==0) assert(AppleProvider::alloc_pd(s.pd,s.udata)==0);
+        else {
+            uint32_t attr[3]={31,0,0};
+            assert(AppleProvider::create_cq(s.cq,attr,s.udata)==0);
+        }
+        sim.fail_opcode=kind==0 ? 0x801 : kind==1 ? 0x401 : 0x501;
+        if (kind==0) assert(AppleProvider::dealloc_pd(s.pd,s.udata)!=0);
+        else if (kind==1) assert(AppleProvider::destroy_cq(s.cq,s.udata)!=0);
+        else assert(AppleProvider::destroy_qp(s.qp,s.udata)!=0);
+        sim.fail_opcode=0;
+        AppleProvider::dealloc_context(s.context); s.mr=nullptr;
+        assert(provider.orphan_count()==0);
+        assert(provider.dispose() && hca.stop() && !sim.buffers && !pins && sim.objects.empty());
+    }
+    puts("PASS immediate context reclaim after transient PD/CQ/QP destroy refusal");
+}
 int main() {
+    review_immediate_orphan_reclaim();
+    large_registration();
+    process_death_teardown();
     user_blueflame_mappings();
     user_queue_mappings();
     registration_index_reuse();

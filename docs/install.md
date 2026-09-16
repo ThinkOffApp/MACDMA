@@ -1,6 +1,6 @@
 # Install the native driver
 
-This is a developer beta for supervised hardware testing, not a signed consumer installer. These instructions describe the setup used for the 0.1.16 lab driver and replace machine-specific install paths with repository-relative commands. The portable restore helper has offline tests; a clean installation following this guide has not yet been repeated on a fresh Mac.
+This is a developer beta for supervised hardware testing, not a signed consumer installer. These instructions target the 0.1.18 development driver and replace machine-specific install paths with repository-relative commands. The portable restore helper has offline tests; a clean installation following this guide has not yet been repeated on a fresh Mac.
 
 Read the removal section before starting. An experimental kernel driver can crash the Mac, and the development security settings reduce system protection. Have a backup, physical access and a separate management connection. Do not use the CX5 link for the SSH or Screen Sharing session that manages installation.
 
@@ -9,16 +9,17 @@ Read the removal section before starting. An experimental kernel driver can cras
 | Component | Lab configuration |
 |---|---|
 | Mac | Mac Studio, M3 Ultra, 256 GB unified memory |
-| macOS | macOS 27, build `26A428`, for the 0.1.16 campaign |
+| macOS | macOS 27, build `26A428`, used for the 0.1.18 functional checks |
 | Enclosure | OWC Mercury Helios 5S, Thunderbolt 5 PCIe enclosure |
 | Mac NIC | Mellanox ConnectX-5 Ex EN, MCX516A-CDAT, dual QSFP28; PCI ID `15b3:1019` |
 | Mac cable | Thunderbolt 5 cable from the Studio to the powered enclosure |
 | Network cable | Mellanox MCP1600-C001E30N, 1 m passive QSFP28-to-QSFP28 DAC |
+| Network link | 100GBASE-CR4 with RS-FEC on those cables, validated 2026-09-15 with driver 0.1.17; the 0.1.16 campaign and the pooled headline latency table ran at 40 Gb/s on an earlier cable |
 | Peer | One NVIDIA DGX Spark with its ConnectX-7 Ethernet interface |
 | Link settings | Ethernet MTU 9000, RC path MTU 4096 |
 | Build tools | Xcode with the macOS 27 SDK, Apple command-line tools and Python 3 |
 
-The wider lab has two Sparks, but the published latency figures cover one directly connected Spark and the Studio. A second Spark is not needed for this setup. QSFP28 is the cable connector, not SFP28. The NIC's nominal port rate is not a claim of measured Thunderbolt throughput or two-port scaling.
+The wider lab has two Sparks, but the published latency figures cover one directly connected Spark and the Studio. A second Spark is not needed for this setup. QSFP28 is the cable connector, not SFP28. The NIC's nominal port rate is not a claim of measured Thunderbolt throughput or two-port scaling: the driver's PCIe-path readout shows the Thunderbolt 5 tunnel as PCIe Gen4 x4 with a 128-byte maximum payload on every hop, and no validated sustained-bandwidth figure has been published yet.
 
 The source accepts exact builds `26A428` and the earlier inspected beta `26A5425a`; this guide and restore helper target `26A428`. An arbitrary macOS 27 build is not sufficient. Check `sw_vers -buildVersion`, and do not remove the build guard to force an unsupported version to load.
 
@@ -104,7 +105,7 @@ sudo /bin/bash tools/install-native.sh --install
 
 Keep the printed backup directory. If `kmutil` requests approval, open System Settings → Privacy & Security, approve `org.mcdma.cx5.native` or the displayed MCDMA entry, authenticate and restart when macOS requests it. A load exit of zero alone does not establish that the new version owns the card. Do not repeatedly run the install block to dismiss an approval or dependency failure; read the actual error first.
 
-After approval/restart, shut down, connect the powered Helios over Thunderbolt 5 and attach the QSFP28 cable to the intended Spark port, then boot and sign in. This avoids relying on unvalidated removal of a running driver with mapped DMA pages.
+After approval/restart, shut down, connect the powered Helios over Thunderbolt 5 and attach the QSFP28 cable to the intended Spark port, then boot and sign in. This avoids relying on unvalidated removal of a running driver with mapped DMA pages. If both Studio ports are cabled, confirm which Spark port each cable actually reaches before configuring addresses and neighbors. A crossed pair observed on 2026-09-15 reported the port active on both sides while Studio-initiated transfers failed with retry-exceeded completions; swapping the two cables at the Studio fixed it without any software change.
 
 ```sh
 kmutil showloaded --list-only --variant-suffix release | grep org.mcdma.cx5.native
@@ -113,7 +114,7 @@ ifconfig -a
 ibv_devices
 ```
 
-Check version 0.1.16 and the UUID recorded from your own signed build. A mismatched UUID means the expected build is not loaded. `MCDMAQuarantined` or a nonzero startup error requires diagnosis, not repeated transfer attempts. The old `rdma_enN` Thunderbolt ports may remain down when no Mac-to-Mac Thunderbolt RDMA link exists; the CX5 devices are named `rdma_mcrdmaN`.
+Check version 0.1.18 and the UUID recorded from your own signed build. A mismatched UUID means the expected build is not loaded. `MCDMAQuarantined` or a nonzero startup error requires diagnosis, not repeated transfer attempts. The old `rdma_enN` Thunderbolt ports may remain down when no Mac-to-Mac Thunderbolt RDMA link exists; the CX5 devices are named `rdma_mcrdmaN`.
 
 ## 4. Configure the Linux peer and restore the Mac GID
 
@@ -159,7 +160,7 @@ sudo python3 tools/restore-rdma.py \
   --peer-gid "$PEER_GID" --peer-mac "$PEER_HWADDR"
 ```
 
-This replaces the private `restore-rdma-0.1.16.sh` command. It checks the loaded version and selected interface MAC, adds the Mac's MAC-derived link-local address, brings the interface up, installs the static peer neighbor and runs the native GID checker. It does not change management interfaces or hide a failed command. Address and neighbor configuration is temporary, so rerun it after a reboot, resolving the interface name again. A successful discovery check is not yet a successful memory transfer.
+This is the portable address-restore command. It checks the loaded version and selected interface MAC, adds the Mac's MAC-derived link-local address, brings the interface up, installs the static peer neighbor and runs the native GID checker. It does not change management interfaces or hide a failed command. Address and neighbor configuration is temporary, so rerun it after a reboot, resolving the interface name again. A successful discovery check is not yet a successful memory transfer.
 
 On the Spark, also add the reciprocal static neighbor. Set `MAC_GID` to the Mac link-local address printed by the restore plan, without a zone suffix, and use the same observed `MAC_HWADDR`:
 

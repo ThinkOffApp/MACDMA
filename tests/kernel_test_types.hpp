@@ -11,6 +11,9 @@ constexpr IOReturn kIOReturnBusy=2;
 constexpr IOReturn kIOReturnBadArgument=3;
 constexpr IOReturn kIOReturnNoMemory=4;
 constexpr IOReturn kIOReturnIOError=5;
+constexpr IOReturn kIOReturnNoSpace=6;
+constexpr IOReturn kIOReturnUnsupported=7;
+constexpr IOReturn kIOReturnNotReady=8;
 using IOLock=std::mutex;
 inline IOLock *IOLockAlloc() { return new IOLock; }
 inline void IOLockFree(IOLock *lock) { delete lock; }

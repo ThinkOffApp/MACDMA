@@ -7,7 +7,8 @@
   `mcdma.driver`, `tools/` (Mac tools) and `tools/linux-arm64/verbs-peer`
 
 Neither file is committed: the kernel extension is a binary built and signed
-for one machine's security policy. Build the package from a Mac that already
+for one machine's security policy. The package builder requires driver **0.1.18**.
+Build the package from a Mac that already
 has the driver installed:
 
 ```sh
@@ -17,3 +18,5 @@ MAC=<ssh host> BUILD_DIR=<dir of the built tools on that Mac> SPARK=<ssh host> n
 The driver source lives in the MCDMA repository; `tools/make-driver-package.sh`
 only collects the installed files over ssh. Any folder with the same layout
 can be selected with `mcdma settings set driverPackage <dir>`.
+
+The manifest contains a SHA-256 for every member and the archive as a whole; older manifests without `files` must be regenerated.

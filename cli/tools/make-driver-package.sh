@@ -11,6 +11,7 @@
 # Optional:
 #   SPARK=<ssh host of a Spark>  SPARK_PEER=<path of verbs-peer on that Spark>
 set -euo pipefail
+export COPYFILE_DISABLE=1
 : "${MAC:?set MAC to the ssh host of the Mac that has the driver installed}"
 : "${BUILD_DIR:?set BUILD_DIR to the directory of the built tools on that Mac}"
 SPARK=${SPARK:-}
@@ -28,7 +29,7 @@ ssh -o BatchMode=yes "$MAC" 'cat /usr/local/lib/rdma/libmcdma-rdmav34.so' > "$st
 ssh -o BatchMode=yes "$MAC" 'cat /etc/libibverbs.d/mcdma.driver' > "$stage/payload/mcdma.driver"
 chmod 755 "$stage/payload/libmcdma-rdmav34.so"
 echo "· Mac tools from $BUILD_DIR"
-for t in native-verbs-peer cx5-native-check mcdma-set fabric-keepalive user-queue-check cq-map-check; do
+for t in native-verbs-peer cx5-native-check mcdma-set fabric-keepalive user-queue-check cq-map-check lifecycle-client mcdma-bw; do
   if ssh -o BatchMode=yes "$MAC" "test -x '$BUILD_DIR/$t'"; then
     ssh -o BatchMode=yes "$MAC" "cat '$BUILD_DIR/$t'" > "$stage/payload/tools/$t"; chmod 755 "$stage/payload/tools/$t"; echo "    $t"
   fi
@@ -46,8 +47,9 @@ kpi=$(/usr/libexec/PlistBuddy -c 'Print OSBundleLibraries:com.apple.kpi.iokit' "
 uuid=$(dwarfdump --uuid "$stage/payload/MCDMACX5Native.kext/Contents/MacOS/MCDMACX5Native" 2>/dev/null | awk '{print $2}' | head -1)
 [ -n "$uuid" ] || uuid=$(otool -l "$stage/payload/MCDMACX5Native.kext/Contents/MacOS/MCDMACX5Native" | awk '/uuid/{print $2}' | head -1)
 match=$(/usr/libexec/PlistBuddy -c 'Print IOKitPersonalities:MCDMACX5Native:IOPCIMatch' "$plist")
+[ "$version" = 0.1.18 ] || { echo "Expected an installed 0.1.18 driver" >&2; exit 3; }
 archive="mcdma-driver-$version.tar.gz"
-rm -f "$out"/mcdma-driver-*.tar.gz
+
 tar czf "$out/$archive" -C "$stage/payload" .
 sha() { shasum -a 256 "$1" | cut -d ' ' -f1; }
 tools_json=$(cd "$stage/payload/tools" && ls -1 | grep -v linux-arm64 | awk '{printf "%s\"%s\": \"tools/%s\"", (NR>1?", ":""), $1, $1}')
@@ -73,4 +75,12 @@ cat > "$out/manifest.json" <<JSON
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
+python3 - "$stage/payload" "$out/manifest.json" <<'PYJSON'
+import hashlib,json,sys
+from pathlib import Path
+root=Path(sys.argv[1]); path=Path(sys.argv[2]); m=json.loads(path.read_text())
+m['files']={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*')) if p.is_file()}
+m['requires']['macos_build']='26A428'
+path.write_text(json.dumps(m,indent=2)+'\n')
+PYJSON
 echo "· wrote $out/$archive and manifest.json (driver $version, UUID $uuid)"

@@ -3,6 +3,7 @@
 // Sparks: which Mac port is cabled to which Spark port, what each side must be
 // configured with, and how far along each link is. Pure functions.
 const { eui64 } = require('./parse');
+const { driverIdentity } = require('./verification');
 
 const portKey = (macId, iface) => `${macId}:${iface}`;
 
@@ -115,7 +116,8 @@ function build({ macs, sparks, settings, lastTests = {} }) {
     const v = verified[p.key];
     const wiringVerified = v && v.spark === c.spark && v.iface === c.iface ? v : null;
     const lt = lastTests[p.key];
-    const lastTest = lt && lt.spark === c.spark && lt.iface === c.iface ? lt : null;
+    const identity = driverIdentity(info, p, c, settings);
+    const lastTest = lt && lt.spark === c.spark && lt.iface === c.iface && identity && lt.identity === identity ? lt : null;
     const confMac = (info.tools && info.tools.neighboursConf) || '';
     const confSpark = (sp.persist && sp.persist.conf) || '';
     const status = {
@@ -130,7 +132,7 @@ function build({ macs, sparks, settings, lastTests = {} }) {
     };
     status.configured = status.studioAddress && status.studioNeighbour && status.sparkNeighbour && status.sparkGid;
     status.ready = status.configured && status.portsActive;
-    links.push({ id: p.key, reason: reasons[p.key] || 'saved', mac: { id: p.macId, kind: p.macKind, host: p.macHost, label: p.macLabel }, studio: p, spark: c,
+    links.push({ id: p.key, identity, reason: reasons[p.key] || 'saved', mac: { id: p.macId, kind: p.macKind, host: p.macHost, label: p.macLabel }, studio: p, spark: c,
       sparkHost: sp.host || c.host, sparkName: sp.hostname || c.spark, expected: { studioLinkLocal: expectedStudioLL, sparkLinkLocal: c.gid || c.eui64 }, status });
   }
   const unmapped = ports.filter((p) => !p.iface || !mapping[p.key]);

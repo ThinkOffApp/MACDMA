@@ -34,6 +34,8 @@ struct mcdma_user_completion {
     // Hardware WQE counter and whether the QP is user-posted: for such QPs the
     // kernel can only report the counter, so the cross-check compares that.
     uint32_t counter; int user;
+    // Public wc flags (2: with immediate) and the raw immediate bits.
+    uint32_t flags, immediate;
 };
 
 static inline void mcdma_user_queue_reset(struct mcdma_user_queue *q) {
@@ -101,16 +103,25 @@ static inline int mcdma_user_decode(const uint8_t cqe[64],mcdma_user_lookup look
     struct mcdma_user_record record;
     if (!mcdma_user_queue_complete(queue,counter,&record)) return -1;
     out->id=record.id; out->qpn=qpn; out->counter=counter; out->user=view.user_posted;
-    out->opcode=send ? (record.opcode==0x08 ? 1u : record.opcode==0x10 ? 2u : 0u) : 128u;
+    // Receive formats: 2 SEND, 3 SEND with immediate, 1 WRITE with immediate
+    // (public opcode 129, byte count is the written length). Send side: the
+    // recorded opcode decides, exactly as in the kernel provider.
+    const int with_immediate=!send && (opcode==1 || opcode==3);
+    out->opcode=send ? ((record.opcode==0x08 || record.opcode==0x09) ? 1u : record.opcode==0x10 ? 2u : 0u)
+                     : (opcode==1 ? 129u : 128u);
     if (opcode==13 || opcode==14) {
         out->status=mcdma_user_status(cqe[55]);
         out->vendor=((uint32_t)cqe[54]<<8)|cqe[55];
-    } else if (!send && opcode!=2) {
-        // Immediate/invalidate receive formats are not supported yet.
+    } else if (!send && opcode!=2 && !with_immediate) {
+        // Invalidate receive formats are not supported yet.
         out->status=21; out->vendor=opcode;
     } else if (!send) {
         const uint32_t bytes=mcdma_user_be32(cqe+44);
-        if (bytes>record.length) out->status=1; else out->bytes=bytes;
+        if (opcode!=1 && bytes>record.length) out->status=1;
+        else {
+            out->bytes=bytes;
+            if (with_immediate) { out->flags=2u; memcpy(&out->immediate,cqe+40,4); }
+        }
     } else if (record.opcode==0x10) out->bytes=record.length;
     return 1;
 }

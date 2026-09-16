@@ -8,19 +8,18 @@ const path = require('path');
 const readline = require('readline');
 
 const SSH = '/usr/bin/ssh';
-const cmDir = `/tmp/mcdma-setup-${process.pid}`;
-let cmReady = false;
+let cmDir = null;
 
 function sshBase() {
-  if (!cmReady) {
-    fs.rmSync(cmDir, { recursive: true, force: true });
-    fs.mkdirSync(cmDir, { recursive: true });
-    cmReady = true;
+  if (!cmDir) {
+    // macOS has a 104-byte Unix socket path limit, including ssh's suffix.
+    cmDir = fs.mkdtempSync('/tmp/mcdma-ssh-');
+    fs.chmodSync(cmDir, 0o700);
   }
   return [
     '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=15',
     '-o', 'StrictHostKeyChecking=accept-new',
-    '-o', 'ControlMaster=auto', '-o', `ControlPath=${cmDir}/%r@%h-%p`, '-o', 'ControlPersist=600'
+    '-o', 'ControlMaster=auto', '-o', `ControlPath=${cmDir}/%C`, '-o', 'ControlPersist=600'
   ];
 }
 
@@ -45,7 +44,13 @@ function run(cmd, args = [], opts = {}) {
 
 const sh = (script, opts) => run('/bin/bash', ['-c', script], opts);
 
+function validateSshHost(host) {
+  if (typeof host !== 'string' || !host || /^-/.test(host) || /[\s\x00]/.test(host)) throw new Error('Invalid SSH host or alias');
+  return host;
+}
+
 async function ssh(host, script, opts = {}) {
+  validateSshHost(host);
   const r = await run(SSH, [...sshBase(), host, script], opts);
   if (r.code === 255 && !r.timedOut) { // connection-level failure: retry once without the mux
     return run(SSH, ['-o', 'ControlPath=none', '-o', 'ControlMaster=no', ...sshBase(), host, script], opts);
@@ -53,7 +58,7 @@ async function ssh(host, script, opts = {}) {
   return r;
 }
 
-function sshEnd(host) { return run(SSH, [...sshBase(), '-O', 'exit', host], { timeoutMs: 2000 }); }
+function sshEnd(host) { validateSshHost(host); return run(SSH, [...sshBase(), '-O', 'exit', host], { timeoutMs: 2000 }); }
 
 // Privileged script. The command-line tool installs a sudo-based runner; the
 // fallback is the macOS administrator dialog (osascript) for callers that embed
@@ -87,21 +92,23 @@ async function sudoRunner(file, prompt) {
 }
 
 async function adminRun(script, prompt = 'mcdma needs administrator access.') {
-  const file = path.join(os.tmpdir(), `mcdma-admin-${process.pid}-${Date.now()}.sh`);
-  fs.writeFileSync(file, '#!/bin/bash\nset -u\n' + script + '\n', { mode: 0o700 });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mcdma-admin-'));
+  fs.chmodSync(directory, 0o700);
+  const file = path.join(directory, 'run.sh');
   try {
+    fs.writeFileSync(file, '#!/bin/bash\nset -u\n' + script + '\n', { mode: 0o700, flag: 'wx' });
     if (privilegeRunner) return await privilegeRunner(file, prompt);
     const aq = (s) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-    const osa = `do shell script ${aq('/bin/bash ' + file + ' 2>&1')} with administrator privileges with prompt ${aq(prompt)}`;
+    const osa = `do shell script ${aq('/bin/bash ' + "'" + file.replace(/'/g, "'\\''") + "' 2>&1")} with administrator privileges with prompt ${aq(prompt)}`;
     const r = await run('/usr/bin/osascript', ['-e', osa], { timeoutMs: 15 * 60 * 1000 });
     if (/User canceled|-128/.test(r.err)) return { code: -2, out: r.out, err: 'cancelled', cancelled: true };
     return r;
-  } finally { fs.rmSync(file, { force: true }); }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
 // A host is either this Mac or a machine reached over ssh; both expose sh().
 class Host {
-  constructor(kind, alias) { this.kind = kind; this.alias = alias || null; }
+  constructor(kind, alias) { this.kind = kind; this.alias = kind === 'ssh' ? validateSshHost(alias) : null; }
   get label() { return this.kind === 'local' ? 'this Mac' : this.alias; }
   sh(script, opts) { return this.kind === 'local' ? sh(script, opts) : ssh(this.alias, script, opts); }
   spawnArgs(command) { // [cmd, args] for a long-lived process
@@ -138,7 +145,7 @@ class Endpoint {
     return new Promise((resolve) => {
       if (this.closed) return resolve(this.exitCode);
       try { this.p.stdin.end(); } catch {}
-      const t = setTimeout(() => { try { this.p.kill('SIGKILL'); } catch {} resolve(this.exitCode); }, timeoutMs);
+      const t = setTimeout(() => { try { this.p.kill('SIGKILL'); } catch {} resolve(-1); }, timeoutMs);
       this.p.once('close', (code) => { clearTimeout(t); resolve(code); });
     });
   }
@@ -146,7 +153,8 @@ class Endpoint {
 
 function dispose(hosts) {
   for (const h of hosts) if (h.kind === 'ssh') sshEnd(h.alias);
-  try { fs.rmSync(cmDir, { recursive: true, force: true }); } catch {}
+  try { if (cmDir) fs.rmSync(cmDir, { recursive: true, force: true }); } catch {}
+  cmDir = null;
 }
 
 module.exports = { run, sh, ssh, sshEnd, adminRun, setPrivilegeRunner, sudoRunner, runInherit, Host, Endpoint, dispose };

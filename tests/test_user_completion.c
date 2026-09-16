@@ -69,12 +69,24 @@ int main(void) {
     CHECK(mcdma_cq_entry(page,33,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==500 && c.opcode==128 && c.bytes==4000 && c.status==0);
     emit(page,34,0x42,1,2,0,65);
     CHECK(mcdma_cq_entry(page,34,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==501 && c.status==1 && c.bytes==0);
-    emit(page,35,0x42,2,3,0,16);
-    CHECK(mcdma_cq_entry(page,35,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==502 && c.status==21 && c.vendor==3);
+    emit(page,35,0x42,2,3,0,16); memcpy(page+(35u&31u)*64+40,"\x0a\x0b\x0c\x0d",4);
+    CHECK(mcdma_cq_entry(page,35,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==502 && c.status==0);
+    CHECK(c.opcode==128 && c.bytes==16 && c.flags==2 && !memcmp(&c.immediate,"\x0a\x0b\x0c\x0d",4));
     // A responder error goes to the receive queue.
     CHECK(mcdma_user_queue_post(r,503,0x0a,64));
     emit(page,36,0x42,3,14,0x05,0);
     CHECK(mcdma_cq_entry(page,36,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==503 && c.status==5 && c.opcode==128);
+    // A WRITE with immediate consumes a receive entry and reports the written
+    // length; SEND with invalidate is still refused rather than faked.
+    CHECK(mcdma_user_queue_post(r,504,0x0a,64) && mcdma_user_queue_post(r,505,0x0a,64));
+    emit(page,42,0x42,4,1,0,8192);
+    CHECK(mcdma_cq_entry(page,42,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==504 && c.opcode==129 && c.bytes==8192 && c.flags==2);
+    emit(page,43,0x42,5,4,0,8);
+    CHECK(mcdma_cq_entry(page,43,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==505 && c.status==21 && c.vendor==4);
+    // A WRITE with immediate completes on the send side as a WRITE.
+    CHECK(mcdma_user_queue_post(q,606,0x09,4096));
+    emit(page,44,0x123456,(uint16_t)(q->producer-1),0,0,0);
+    CHECK(mcdma_cq_entry(page,44,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==1 && c.id==606 && c.opcode==1 && c.flags==0);
     // Unknown QP, wrong queue and unsupported opcodes are rejected.
     emit(page,37,0x999999,0,0,0,0);
     CHECK(mcdma_cq_entry(page,37,cqe)==1 && mcdma_user_decode(cqe,lookup,NULL,&c)==-1);

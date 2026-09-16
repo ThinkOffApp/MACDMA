@@ -27,6 +27,22 @@ These are local submission-to-observed-completion measurements on the initiator.
 
 The earlier 0.1.16 headline was 10.208 / 7.875 µs from the Studio and 4.096 / 7.136 µs from the Spark. That campaign used a different path MTU and driver version, so subtracting the two tables does not isolate the keepalive's effect. Use matching off/on trials for that comparison.
 
+## 100 Gb/s link runs
+
+Later on 15 September 2026 the Mac–Spark link was re-cabled with Mellanox MCP1600-C001E30N passive copper cables and negotiated 100GBASE-CR4 with RS-FEC. The same installed 0.1.17 driver, BlueFlame-64 arm, `-O2` probe client and per-sample fill were used, with 1,000 samples per operation per run after 100 warmups. Every run passed four-way byte verification. These are single runs, not pooled, so the table above remains the headline. Medians are in µs; "slow" counts WRITE or READ samples above 16 µs out of 1,000.
+
+| Run | Keepalive | Path MTU | Payload | Studio WRITE | slow | Studio READ | slow | Spark WRITE | Spark READ |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | on, small | 1024 | 4 KiB | 7.29 | 13 | 5.92 | 1 | 3.23 | 5.10 |
+| 2 | on, small | 4096 | 4 KiB | 7.42 | 10 | 5.96 | 3 | 3.55 | 5.46 |
+| 3 | on, small | 1024 | 4 KiB | 7.21 | 15 | 5.92 | 4 | 3.34 | 5.55 |
+| 4 | on, small | 1024 | 1 KiB | 6.04 | 10 | 5.50 | 5 | 2.59 | 4.53 |
+| 5 | off | 1024 | 4 KiB | 9.88 | 195 | 7.12 | 6 | 3.36 | 6.96 |
+| 6 | on, small | 1024 | 4 KiB | 7.21 | 11 | 5.92 | 1 | 3.44 | 5.60 |
+| 7 | on, small | 2048 | 4 KiB | 7.42 | 10 | 5.79 | 6 | 3.34 | 5.26 |
+
+Against the 40 Gb/s keepalive-on runs recorded the same morning (4 KiB Studio WRITE 7.3–7.8, READ 5.7–6.1, Spark WRITE 3.4–3.8, Spark READ 5.4–5.9 µs), the 100 Gb/s runs were 0.1–0.4 µs lower across the board. That is roughly what serializing 4 KiB at 100 rather than 40 Gb/s saves once pipelining at path MTU 1024 hides part of it; it is not a throughput result. The keepalive-off run shows the idle slow state unchanged by the link speed: 195 of 1,000 WRITEs above 16 µs against 10–15 with the keepalive running.
+
 ## What we found, and what remains an explanation
 
 Repeated experiments associated continuous small GPU dispatches with lower latency and fewer long completions. Heavier GPU work did not consistently give the best result. Inserting idle gaps often lost the benefit, while some burst patterns retained it, so there is no established universal idle-time threshold.
@@ -39,7 +55,7 @@ Power and resource use matter. The headline runs did not measure incremental who
 
 ## Build and run
 
-Complete the [RDMA installation and correctness checks](install.md) first. The public installer currently builds **0.1.16**; this helper has no dependency on the extra 0.1.17 lab knobs, but identical performance on 0.1.16 has not been measured by the three-run set above. No driver reinstall is needed to try the helper with an already working MCDMA installation.
+Complete the [RDMA installation and correctness checks](install.md) first. The current source builds **0.1.18**; the three-run set above still describes 0.1.17, and equivalent performance on 0.1.18 has not yet been measured. No driver reinstall is needed to try the helper with an already working MCDMA installation.
 
 On the target Studio, from the repository root:
 

@@ -262,15 +262,40 @@ void native_data_callbacks() {
     assert(!apple_post_send(hca,a,true,&send,&bad));
     completion(cq,a,2,13,0x13);
     assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].status==10 && wc[0].vendor==0x13 && wc[0].id==3);
-    send.flags=2; send.sge_count=2;
+    // Scatter lists: up to three entries for SEND and two for RDMA, every
+    // entry checked; a WRITE with immediate carries the raw bits and fence.
+    AppleSGE list[4]={{0x10000000,16,7},{0x10001000,16,7},{0x10002000,16,9},{0x10003000,16,7}};
+    send.flags=2; send.sge=list; send.sge_count=4;
     assert(apple_post_send(hca,a,false,&send,&bad)==-EINVAL && !a.sends.pending());
+    send.sge_count=3;
+    assert(!apple_post_send(hca,a,false,&send,&bad) && a.sends.pending()==1 && a.sends.references(9));
+    {
+        const uint8_t *wqe=a.buffer.cpu+512+((a.producer-1)&31)*64;
+        assert(wqe[3]==0x0a && (cx5::read_be32(wqe+4)&0xff)==4 && cx5::read_be32(wqe+48)==16 && cx5::read_be32(wqe+52)==9);
+    }
+    completion(cq,a,uint16_t(a.producer-1)); assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].id==3 && wc[0].opcode==0);
+    assert(!a.sends.references(9));
+    AppleRDMAWR write_imm=write; write_imm.base.opcode=1; write_imm.base.flags=2|1; write_imm.base.immediate=0x11223344;
+    write_imm.base.sge=list; write_imm.base.sge_count=3;
+    assert(apple_post_send(hca,a,false,&write_imm.base,&bad)==-EINVAL && !a.sends.pending());
+    write_imm.base.sge_count=2;
+    assert(!apple_post_send(hca,a,false,&write_imm.base,&bad));
+    {
+        const uint8_t *wqe=a.buffer.cpu+512+((a.producer-1)&31)*64; uint32_t imm=0; memcpy(&imm,wqe+12,4);
+        assert(wqe[3]==0x09 && wqe[11]==0x88 && imm==0x11223344 && (cx5::read_be32(wqe+4)&0xff)==4);
+        assert(cx5::read_be64(wqe+16)==0x20000000 && cx5::read_be32(wqe+32)==16 && cx5::read_be32(wqe+48)==16);
+    }
+    completion(cq,a,uint16_t(a.producer-1)); assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].opcode==1 && wc[0].id==write.base.id);
+    write_imm.base.flags=2|4|8; write_imm.base.sge_count=1;
+    assert(apple_post_send(hca,a,false,&write_imm.base,&bad)==-EOPNOTSUPP); // Kernel posting never inlines.
+    send.sge=&sge; send.sge_count=1;
     write.remote=UINT64_MAX;
     assert(apple_post_send(hca,a,false,&write.base,&bad)==-EINVAL && !a.sends.pending());
     write.remote=0x20000000;
     for (unsigned i=0;i<31;++i) assert(!apple_post_send(hca,a,false,&write.base,&bad));
     assert(apple_post_send(hca,a,false,&write.base,&bad)==-ENOMEM && bad==&write.base);
     for (unsigned i=0;i<31;++i) {
-        completion(cq,a,uint16_t(i+3)); assert(apple_poll_cq(hca,cq,1,wc)==1);
+        completion(cq,a,uint16_t(i+5)); assert(apple_poll_cq(hca,cq,1,wc)==1); // Two extra posts precede these.
     }
     AppleRecvWR recv{nullptr,0x200000001,&sge,1}; const AppleRecvWR *bad_recv=nullptr;
     assert(!apple_post_recv(hca,b,&recv,&bad_recv)); completion(cq,b,0,2);
@@ -279,8 +304,19 @@ void native_data_callbacks() {
     assert(!apple_post_recv(hca,b,&recv,&bad_recv)); completion(cq,b,1,2);
     cx5::write_be32(cq.buffer.cpu+(cq.consumer&31)*64+44,65);
     assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].status==1 && !wc[0].bytes);
+    // Receive formats: SEND with immediate (3) and WRITE with immediate (1)
+    // report the raw immediate with wc flag 2; SEND with invalidate (4) is
+    // still unsupported and never reported as plain success.
     assert(!apple_post_recv(hca,b,&recv,&bad_recv)); completion(cq,b,2,3);
-    assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].status==21 && wc[0].vendor==3);
+    memcpy(cq.buffer.cpu+(cq.consumer&31)*64+40,"\x0a\x0b\x0c\x0d",4);
+    cx5::write_be32(cq.buffer.cpu+(cq.consumer&31)*64+44,16);
+    assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].status==0 && wc[0].opcode==128 && wc[0].bytes==16 && wc[0].flags==2);
+    assert(!memcmp(&wc[0].immediate,"\x0a\x0b\x0c\x0d",4));
+    assert(!apple_post_recv(hca,b,&recv,&bad_recv)); completion(cq,b,3,1);
+    cx5::write_be32(cq.buffer.cpu+(cq.consumer&31)*64+44,4096);
+    assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].status==0 && wc[0].opcode==129 && wc[0].bytes==4096 && wc[0].flags==2);
+    assert(!apple_post_recv(hca,b,&recv,&bad_recv)); completion(cq,b,4,4);
+    assert(apple_poll_cq(hca,cq,1,wc)==1 && wc[0].status==21 && wc[0].vendor==4);
     assert(hca.destroy_qp(a) && hca.destroy_qp(b) && hca.destroy_cq(cq) && hca.dealloc_pd(pd) && hca.stop());
     assert(!sim.buffers);
 }
@@ -307,6 +343,40 @@ void detached_credit_recovery(bool separate) {
     assert(hca.destroy_qp(b) && !send.outstanding && !send.references && !receive->outstanding && !receive->references);
     assert(hca.destroy_cq(send) && (!separate || hca.destroy_cq(recv)) && hca.dealloc_pd(pd) && hca.stop());
     assert(sim.calls==calls && !sim.buffers);
+}
+void tunnel_knobs() {
+    // Relaxed-ordering keys: requested bits on every registration until the
+    // firmware refuses once, then strict keys and a reported refusal; the
+    // acknowledgement-request frequency follows the flag on every transition.
+    reset(); Hca hca; hca.relaxed_ordering_requested=true; assert(hca.start());
+    HardwareObject pd,mr,mr2; uint32_t key=0,key2=0; uint64_t pages[2]={0x40000000,0x40001000};
+    assert(hca.alloc_pd(pd) && hca.register_mr(mr,pd.id,0x12345000,8192,pages,2,7,key));
+    assert(sim.relaxed_keys==1 && sim.strict_keys==0 && hca.relaxed_ordering_keys==1 && !hca.relaxed_ordering_refused);
+    sim.refuse_relaxed_ordering=true;
+    assert(hca.register_mr(mr2,pd.id,0x12345000,8192,pages,2,7,key2));
+    assert(sim.relaxed_keys==1 && sim.strict_keys==1 && hca.relaxed_ordering_refused && hca.relaxed_ordering_keys==1 && !hca.transport.quarantined);
+    HardwareObject mr3; uint32_t key3=0; sim.refuse_relaxed_ordering=false;
+    assert(hca.register_mr(mr3,pd.id,0x12345000,8192,pages,2,7,key3) && sim.strict_keys==2 && sim.relaxed_keys==1);
+    assert(hca.deregister_mr(mr,key) && hca.deregister_mr(mr2,key2) && hca.deregister_mr(mr3,key3));
+    HardwareCQ cq; HardwareQP qp;
+    assert(hca.create_cq(cq) && hca.create_qp(qp,pd.id,cq,cq));
+    cx5::RCConnection c{qp.object.id,qp.pd,cq.object.id,17,0x123456,0x654321,qp.buffer.dma+4096,{},{}};
+    c.remote_gid[0]=0xfe; c.remote_gid[1]=0x80; c.remote_mac[0]=2;
+    assert(hca.transition(qp,0x502,c) && cx5::get_bits(sim.command.data()+24,232,0x380,4)==8);
+    hca.ack_request_every_packet=true;
+    assert(hca.transition(qp,0x503,c) && cx5::get_bits(sim.command.data()+24,232,0x380,4)==0);
+    hca.ack_request_every_packet=false;
+    assert(hca.transition(qp,0x504,c) && cx5::get_bits(sim.command.data()+24,232,0x380,4)==8);
+    char text[256];
+    assert(hca.transport.configure_pcie(0,text,sizeof(text)) && strstr(text,"mrrs=512") && hca.transport.max_read_request_applied()==0);
+    assert(!hca.transport.configure_pcie(192,text,sizeof(text)) && !hca.transport.configure_pcie(8192,text,sizeof(text)));
+    assert(hca.transport.configure_pcie(4096,text,sizeof(text)) && hca.transport.max_read_request_applied()==4096 && sim.mrrs_requested==4096);
+    assert(hca.destroy_qp(qp) && hca.destroy_cq(cq) && hca.dealloc_pd(pd) && hca.stop() && sim.objects.empty());
+    reset();
+    { Hca plain; assert(plain.start()); HardwareObject pd2,m; uint32_t k=0;
+      assert(plain.alloc_pd(pd2) && plain.register_mr(m,pd2.id,0x12345000,8192,pages,2,7,k) && sim.relaxed_keys==0 && sim.strict_keys==1);
+      assert(plain.deregister_mr(m,k) && plain.dealloc_pd(pd2) && plain.stop()); }
+    puts("PASS tunnel knobs: relaxed-ordering keys with firmware-refusal fallback, per-packet ACK requests, PCIe probe and read-request size");
 }
 void user_queues() {
     // Negotiated 16 KiB UAR pages: SET_HCA_CAP before the init pages, then a
@@ -410,6 +480,7 @@ void destroy_pending_qp(uint32_t initial_consumer,bool separate_receive_cq) {
 }
 }
 int main() {
+    tunnel_knobs();
     user_queues();
     detached_credit_recovery(false);detached_credit_recovery(true);
     transport_access_guards();

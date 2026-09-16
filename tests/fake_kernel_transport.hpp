@@ -24,6 +24,9 @@ struct Simulation {
     uint32_t fail_uar_allocation=0, uar_allocations=0;
     // 16 KiB UAR page negotiation (SET_HCA_CAP) and user-mappable BAR pages.
     bool uar_pages_16k_supported=true; unsigned uar_page_log=0, set_caps=0;
+    // PCIe configuration probe and firmware refusal of relaxed-ordering keys.
+    uint32_t mrrs_requested=0; unsigned pcie_configs=0;
+    bool refuse_relaxed_ordering=false; unsigned relaxed_keys=0, strict_keys=0;
     std::map<uint64_t,std::vector<uint8_t>> user_pages;
     uint16_t max_frame=10000,admin_frame=1522,oper_frame=1522,vport_frame=1522;
     bool reject_jumbo_vport_once=false,ignore_jumbo_port_once=false;

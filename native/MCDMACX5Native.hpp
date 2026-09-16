@@ -13,6 +13,11 @@ public:
     bool willTerminate(IOService *,IOOptionBits) override;
     bool didTerminate(IOService *,IOOptionBits,bool *) override;
     IOWorkLoop *getWorkLoop() const override;
+    // Root may change the lab knobs at run time through the registry
+    // (IORegistryEntrySetCFProperties): MCDMAMaxReadRequestBytes applies to
+    // the device at once, MCDMARelaxedOrdering to later registrations and
+    // MCDMAAckRequestEveryPacket to later connections. No reinstall needed.
+    IOReturn setProperties(OSObject *properties) override;
 private:
     struct State;
     State *state_=nullptr;

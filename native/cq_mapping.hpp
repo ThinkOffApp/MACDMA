@@ -4,7 +4,7 @@ namespace cx5_native {
 // Separate lifetime from the provider: retired, mapped CQ storage stays
 // charged until its last descriptor is released, including map failures.
 struct CQMappingQuota {
-    static constexpr unsigned limit=64;
+    static constexpr unsigned limit=1024;
     unsigned references=1, mappings=0;
     const unsigned maximum;
     explicit CQMappingQuota(unsigned max=limit):maximum(max) {}
