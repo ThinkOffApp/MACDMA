@@ -30,6 +30,8 @@ struct Simulation {
     std::map<uint64_t,std::vector<uint8_t>> user_pages;
     uint16_t max_frame=10000,admin_frame=1522,oper_frame=1522,vport_frame=1522;
     bool reject_jumbo_vport_once=false,ignore_jumbo_port_once=false;
+    // MPCNT group 0: the 16 counters in register order, and firmware support.
+    uint32_t mpcnt[16]{}; bool mpcnt_supported=true; unsigned mpcnt_queries=0;
     std::map<uint64_t,uint8_t *> maps;
     std::map<uint32_t,uint64_t> cq_dma, qp_dma;
     std::vector<uint8_t> command;

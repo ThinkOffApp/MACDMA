@@ -2,6 +2,8 @@
 #include "apple_registration.hpp"
 #include "apple_build.hpp"
 #include <IOKit/IOMessage.h>
+#include <IOKit/IOUserClient.h>
+#include <kern/task.h>
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSNumber.h>
 
@@ -13,6 +15,8 @@ struct MCDMACX5Native::State {
     IOService *interface=nullptr;
     bool active=false;
     cx5_native::AppleProvider::GidStatus gid{};
+    unsigned pcie_polls=0;
+    bool pcie_counters_refused=false;
 };
 IOWorkLoop *MCDMACX5Native::getWorkLoop() const { return workloop_; }
 bool MCDMACX5Native::start(IOService *parent) {
@@ -116,6 +120,11 @@ failure:
     IOService::stop(parent); return false;
 }
 IOReturn MCDMACX5Native::setProperties(OSObject *properties) {
+    // Registry writes arrive on the calling process's thread. Every knob changes
+    // behaviour for all users of the device (one rewrites the PCIe Device Control
+    // register), so only an administrator (root) process may change them.
+    const IOReturn privilege=IOUserClient::clientHasPrivilege(current_task(),kIOClientPrivilegeAdministrator);
+    if (privilege!=kIOReturnSuccess) return kIOReturnNotPrivileged;
     auto *dictionary=OSDynamicCast(OSDictionary,properties);
     if (!dictionary || !state_ || stopping_) return kIOReturnBadArgument;
     auto &s=*state_;
@@ -165,6 +174,29 @@ void MCDMACX5Native::poll(OSObject *owner,IOTimerEventSource *timer) {
     if (s.hca.relaxed_ordering_requested) {
         self->setProperty("MCDMARelaxedOrderingRefused",s.hca.relaxed_ordering_refused);
         self->setProperty("MCDMARelaxedOrderingKeys",s.hca.relaxed_ordering_keys,64);
+    }
+    // PCIe counters once a second. A failed query is not retried: firmware
+    // without the register would otherwise refuse a command every second.
+    if (!s.pcie_counters_refused && (++s.pcie_polls&1)==0) {
+        cx5_native::Hca::PcieCounters counters{};
+        bool sampled=false;
+        if (!s.verbs.sample_pcie_counters(counters,sampled)) {
+            s.pcie_counters_refused=true;
+            char text[96];
+            snprintf(text,sizeof(text),"refused: status %u syndrome %08x",
+                     s.hca.transport.last.firmware_status,s.hca.transport.last.syndrome);
+            self->setProperty("MCDMAPcieCounters",text);
+        } else if (sampled) {
+            self->setProperty("MCDMAPcieCounters","sampled every second");
+            self->setProperty("MCDMAPcieOutboundStalledReads",counters.stalled_reads,32);
+            self->setProperty("MCDMAPcieOutboundStalledWrites",counters.stalled_writes,32);
+            self->setProperty("MCDMAPcieOutboundStalledReadSeconds",counters.stalled_reads_events,32);
+            self->setProperty("MCDMAPcieOutboundStalledWriteSeconds",counters.stalled_writes_events,32);
+            self->setProperty("MCDMAPcieRxErrors",counters.rx_errors,32);
+            self->setProperty("MCDMAPcieTxErrors",counters.tx_errors,32);
+            self->setProperty("MCDMAPcieCrcErrorsDllp",counters.crc_error_dllp,32);
+            self->setProperty("MCDMAPcieCrcErrorsTlp",counters.crc_error_tlp,32);
+        }
     }
     timer->setTimeoutMS(500);
 }

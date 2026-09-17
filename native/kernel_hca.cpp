@@ -227,6 +227,20 @@ bool Hca::port_active(bool &active) {
     active=active && (output_[15]&0xf)==1 && (output_[15]>>4)==1;
     return true;
 }
+bool Hca::query_pcie_counters(PcieCounters &counters) {
+    counters=PcieCounters{};
+    if (!transport.ready() || !transport.initialized) return false;
+    // MPCNT register data: 8 bytes selecting PCIe index 0 and group 0 without
+    // clearing, then 248 bytes of big-endian 32-bit counters.
+    header(0x805,1); cx5::write_be32(input_+8,0x9051);
+    if (!call(272,272)) return false;
+    const uint8_t *set=output_+24;
+    counters.rx_errors=cx5::read_be32(set+8); counters.tx_errors=cx5::read_be32(set+12);
+    counters.crc_error_dllp=cx5::read_be32(set+32); counters.crc_error_tlp=cx5::read_be32(set+36);
+    counters.stalled_reads=cx5::read_be32(set+48); counters.stalled_writes=cx5::read_be32(set+52);
+    counters.stalled_reads_events=cx5::read_be32(set+56); counters.stalled_writes_events=cx5::read_be32(set+60);
+    return true;
+}
 bool Hca::alloc_pd(HardwareObject &pd) { header(0x800); return create(pd,16); }
 bool Hca::dealloc_pd(HardwareObject &pd) { return destroy(pd,0x801); }
 bool Hca::register_mr(HardwareObject &mr,uint32_t pd,uint64_t address,uint64_t length,

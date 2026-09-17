@@ -123,6 +123,15 @@ bool Transport::execute(const uint8_t *in,size_t in_bytes,uint8_t *out,size_t ou
         sim.vport_frame=uint16_t(cx5::get_bits(in+256,256,0x130,16)); break;
     case 0x761: assert(in[11]==1 && (in[43]==2 || in[43]==0)); break;
     case 0x805:
+        if (cx5::read_be32(in+8)==0x9051) {
+            // Query only, PCIe index 0, group 0, no clear.
+            assert(in_bytes==272 && out_bytes==272 && cx5::read_be32(in+4)==1);
+            for (size_t i=16;i<24;++i) assert(in[i]==0);
+            ++sim.mpcnt_queries;
+            if (!sim.mpcnt_supported) { last.completed=1; last.firmware_status=2; return false; }
+            for (unsigned i=0;i<16;++i) cx5::write_be32(out+24+4*i,sim.mpcnt[i]);
+            break;
+        }
         assert(in_bytes==32 && out_bytes==32 && in[17]==1);
         if (cx5::read_be32(in+8)==0x5006) {
             if (sim.port_gate) {

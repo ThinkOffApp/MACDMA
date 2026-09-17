@@ -163,6 +163,24 @@ void mtu_configuration() {
     assert(hca.configure_ethernet_mtu(1500) && Hca::roce_mtu(hca.ethernet_mtu)==3);
     assert(hca.stop() && !sim.buffers);
 }
+void pcie_counters() {
+    reset(); Hca hca; Hca::PcieCounters counters;
+    assert(!hca.query_pcie_counters(counters) && !sim.mpcnt_queries);
+    assert(hca.start());
+    for (unsigned i=0;i<16;++i) sim.mpcnt[i]=0x01000000u+i;
+    assert(hca.query_pcie_counters(counters) && sim.mpcnt_queries==1);
+    assert(counters.rx_errors==0x01000002u && counters.tx_errors==0x01000003u);
+    assert(counters.crc_error_dllp==0x01000008u && counters.crc_error_tlp==0x01000009u);
+    assert(counters.stalled_reads==0x0100000cu && counters.stalled_writes==0x0100000du);
+    assert(counters.stalled_reads_events==0x0100000eu && counters.stalled_writes_events==0x0100000fu);
+    // Firmware without the register: the query fails cleanly and the command
+    // path stays usable for the port sampler.
+    sim.mpcnt_supported=false;
+    assert(!hca.query_pcie_counters(counters) && sim.mpcnt_queries==2 && !counters.stalled_reads);
+    bool active=false;
+    assert(hca.port_active(active) && active);
+    assert(hca.stop() && !sim.buffers);
+}
 void lifecycle() {
     reset(); Hca hca;
     assert(hca.start() && sim.pages.size()==4 && sim.buffers==3);
@@ -488,6 +506,7 @@ int main() {
     blueflame_guards_and_fallback();
     mtu_configuration();
     driver_startup();
+    pcie_counters();
     lifecycle(); failed_create(false); failed_create(true); corrupt_completion(); corrupt_page_return();
     native_data_callbacks();
     for (uint32_t initial: {0u,29u,31u,32u,63u,0xfffffffeu}) {

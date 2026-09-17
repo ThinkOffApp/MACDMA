@@ -11,3 +11,5 @@ Begin with kernel posting and ordinary direct posting, then test each BlueFlame 
 Raw runner output contains hostnames, paths, addresses, keys used for the test's registered regions and device details. Store it in ignored `results/` or outside this repository, and review it before sharing. Historical benchmark archives are retained outside this driver repository.
 
 A timing improvement alone does not prove the final pmap cache attribute, one-way wire latency, GPU memory access or a hardware latency floor.
+
+The [17 September 0.1.18 report](validation-2026-09-17.md) records sustained bandwidth, two concurrent ports and client termination during measured traffic, with the exact build identity for each check. These bounded checks do not validate mapped hot removal, foreign-QPN isolation or the driver's fallback orphan reclaim on hardware.

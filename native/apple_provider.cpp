@@ -249,6 +249,18 @@ bool AppleProvider::sample_port(bool &active) {
     port_active_=raw; port_valid_=true;
     active=raw && network_ && gid_live_; return true;
 }
+bool AppleProvider::sample_pcie_counters(Hca::PcieCounters &counters,bool &sampled) {
+    counters=Hca::PcieCounters{}; sampled=false;
+    CommandGuard command(this);
+    Hca *hca=nullptr;
+    {
+        Guard guard(this);
+        if (!ready()) return true;
+        hca=hca_;
+    }
+    if (!hca->query_pcie_counters(counters)) return false;
+    sampled=true; return true;
+}
 AppleProvider::GidStatus AppleProvider::gid_status() {
     Guard guard(this); return {gid_live_,gid_adds_,gid_deletes_};
 }

@@ -37,6 +37,16 @@ public:
     IOReturn startup_error = kIOReturnSuccess;
     bool stop();
     bool port_active(bool &active);
+    // PCIe performance counters: an ACCESS_REG query of MPCNT group 0. The
+    // stall fields are the share (0-100) of the last second in which the device
+    // held outbound reads or writes it could not send for lack of PCIe credits,
+    // and how many seconds that share exceeded 30, when the firmware supports
+    // those fields. An accepted MPCNT query alone does not prove stall support.
+    struct PcieCounters {
+        uint32_t rx_errors=0, tx_errors=0, crc_error_dllp=0, crc_error_tlp=0;
+        uint32_t stalled_reads=0, stalled_writes=0, stalled_reads_events=0, stalled_writes_events=0;
+    };
+    bool query_pcie_counters(PcieCounters &counters);
     // Startup-only MTU configuration; refuses changes while QPs exist.
     bool configure_ethernet_mtu(uint16_t bytes);
     uint16_t ethernet_mtu=0, max_ethernet_mtu=0;

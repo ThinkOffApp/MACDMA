@@ -36,6 +36,9 @@ public:
     // Samples port health on the command lock only, so a slow or failing
     // firmware query cannot delay post/poll on the data-path lock.
     bool sample_port(bool &active);
+    // Same lock discipline for the PCIe counters. Returns false only when the
+    // firmware query failed; `sampled` stays false while the device is not ready.
+    bool sample_pcie_counters(Hca::PcieCounters &counters, bool &sampled);
     struct GidStatus { bool live=false; uint64_t adds=0,deletes=0; };
     GidStatus gid_status();
     void dispatch_port_event(bool active);
