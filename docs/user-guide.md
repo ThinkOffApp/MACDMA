@@ -29,13 +29,15 @@ An agent with terminal and SSH access can build software, prepare configuration,
 |---|---|---:|
 | Mac | M3 Ultra Mac Studio, 256 GB unified memory | 1 |
 | macOS | macOS 27, exact validated build `26A428` | 1 installation |
-| PCIe enclosure | OWC Mercury Helios 5S, externally powered | 1 |
+| PCIe enclosure | OWC Mercury Helios 5S ([Amazon affiliate link](https://link.amazon/B04jjctoS)), externally powered | 1 |
 | Host cable | Thunderbolt 5 cable between Studio and Helios | 1 |
 | Network card | Mellanox ConnectX-5 Ex **MCX516A-CDAT**, PCI ID `15b3:1019`, dual QSFP28 | 1 |
 | Linux peers | NVIDIA DGX Spark / GB10 Spark-class machines, each with ConnectX-7 | 2 |
-| Studio-to-Spark cables | Mellanox **MCP1600-C001E30N**, 1 m passive copper, QSFP28 to QSFP28 | 2 |
+| Studio-to-Spark cables | Mellanox **MCP1600-C001E30N** ([Amazon affiliate link](https://link.amazon/B0hdC6Du8)), 1 m passive copper, QSFP28 to QSFP28 | 2 |
 | Management network | Existing Wi-Fi or separate Ethernet with SSH reachability | All hosts |
 | Spark-to-Spark cable | Retain the already working CX7 connection and its existing configuration | 1 existing link |
+
+Affiliate disclosure: I may earn a commission from purchases made through these Amazon links.
 
 One Spark and one QSFP28 cable are sufficient to start. These are **QSFP28**, not SFP28 connectors. The named DAC was validated at 100GBASE-CR4 with RS-FEC; do not infer a cable's supported speed from its connector alone. This guide does not establish support for other NIC families, enclosures or macOS builds.
 

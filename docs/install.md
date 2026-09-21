@@ -10,14 +10,16 @@ Read the removal section before starting. An experimental kernel driver can cras
 |---|---|
 | Mac | Mac Studio, M3 Ultra, 256 GB unified memory |
 | macOS | macOS 27, build `26A428`, used for the 0.1.18 functional checks |
-| Enclosure | OWC Mercury Helios 5S, Thunderbolt 5 PCIe enclosure |
+| Enclosure | OWC Mercury Helios 5S ([Amazon affiliate link](https://link.amazon/B04jjctoS)), Thunderbolt 5 PCIe enclosure |
 | Mac NIC | Mellanox ConnectX-5 Ex EN, MCX516A-CDAT, dual QSFP28; PCI ID `15b3:1019` |
 | Mac cable | Thunderbolt 5 cable from the Studio to the powered enclosure |
-| Network cable | Mellanox MCP1600-C001E30N, 1 m passive QSFP28-to-QSFP28 DAC |
+| Network cable | Mellanox MCP1600-C001E30N ([Amazon affiliate link](https://link.amazon/B0hdC6Du8)), 1 m passive QSFP28-to-QSFP28 DAC |
 | Network link | 100GBASE-CR4 with RS-FEC on those cables, validated 2026-09-15 with driver 0.1.17; the 0.1.16 campaign and the pooled headline latency table ran at 40 Gb/s on an earlier cable |
 | Peer | One NVIDIA DGX Spark with its ConnectX-7 Ethernet interface |
 | Link settings | Ethernet MTU 9000, RC path MTU 4096 |
 | Build tools | Xcode with the macOS 27 SDK, Apple command-line tools and Python 3 |
+
+Affiliate disclosure: I may earn a commission from purchases made through these Amazon links.
 
 The wider lab has two Sparks, but the published latency figures cover one directly connected Spark and the Studio. A second Spark is not needed for this setup. QSFP28 is the cable connector, not SFP28. The NIC's nominal port rate is not a claim of measured Thunderbolt throughput or two-port scaling: the driver's PCIe-path readout shows the Thunderbolt 5 tunnel as PCIe Gen4 x4 with a 128-byte maximum payload on every hop, and both ports share that host path. The [17 September report](validation-2026-09-17.md) records about 50.6 Gbit/s into Studio memory and 29.4 Gbit/s out with Studio-initiated READ/WRITE, plus bounded concurrent-port checks.
 

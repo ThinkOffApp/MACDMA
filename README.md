@@ -52,13 +52,15 @@ A first end-to-end hand-off has run: **Qwen3-4B in MXFP4** was prefilled by vLLM
 | Part | Tested setup |
 |---|---|
 | Mac | Mac Studio M3 Ultra, 256 GB, macOS 27 build `26A428` |
-| Enclosure | OWC Mercury Helios 5S, connected by Thunderbolt 5 |
+| Enclosure | OWC Mercury Helios 5S ([Amazon affiliate link](https://link.amazon/B04jjctoS)), connected by Thunderbolt 5 |
 | NIC | Mellanox ConnectX-5 Ex MCX516A-CDAT, dual QSFP28, PCI `15b3:1019` |
 | Peer | One DGX Spark using its ConnectX-7 Ethernet port |
 | Network link | 100GBASE-CR4 with RS-FEC, validated 2026-09-15 with seven byte-verified runs; the pooled headline table was measured earlier at 40 Gb/s |
-| Network cable | Mellanox MCP1600-C001E30N, 100GbE QSFP28-to-QSFP28 passive copper DAC, 1 m, one per Studio port |
+| Network cable | Mellanox MCP1600-C001E30N ([Amazon affiliate link](https://link.amazon/B0hdC6Du8)), 100GbE QSFP28-to-QSFP28 passive copper DAC, 1 m, one per Studio port |
 | Throughput ceiling | Thunderbolt 5 PCIe tunnel, Gen4 x4 with 128-byte maximum payload per the driver's PCIe-path readout; not the 100 Gb/s port; measured sustained Studio-initiated READ/WRITE about 50.6/29.4 Gbit/s on 0.1.18 |
 | MTU | Ethernet 9000 bytes; headline benchmark RDMA path 1024 bytes, initial validation recipe 4096 bytes |
+
+Affiliate disclosure: I may earn a commission from purchases made through these Amazon links.
 
 Use a separate management connection such as Wi-Fi or another Ethernet interface. MCDMA's `mcrdmaN` interfaces provide RDMA addressing, not ordinary TCP networking. The card's nominal port rate does not establish measured Thunderbolt throughput. If both Studio ports are cabled, confirm which Spark port each cable actually reaches before configuring addresses: on 2026-09-15 a crossed pair showed the port active on both sides while Studio-initiated transfers failed with retry-exceeded completions, and swapping the two cables fixed it with no software change.
 
