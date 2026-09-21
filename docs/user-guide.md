@@ -1,6 +1,6 @@
-# MCDMA: connect a Mac Studio and NVIDIA Sparks
+# MCDMA: connect your Mac and NVIDIA Sparks
 
-This guide explains the hardware Ash used, how to connect it, and how to get verified RDMA transfers before adding inference engines. Start with one Spark; add the second once the first passes.
+This guide explains the hardware Ash used, how to connect it, and how to get verified RDMA transfers before adding inference engines. The measured setup uses a Mac Studio; a compatible MacBook Pro can also be a candidate host, including a one-MacBook/one-Spark setup or two MacBooks paired with two Sparks. Start with one Mac-to-Spark link and verify it before expanding.
 
 **Reviewed 21 September 2026 against native driver 0.1.18.** This is a development setup, not a plug-and-play production driver. The portable installation procedure has not yet been repeated end to end on a fresh machine. It requires owner-assisted macOS security changes and restarts. Keep the Mac available locally during installation.
 
@@ -8,7 +8,7 @@ This guide explains the hardware Ash used, how to connect it, and how to get ver
 
 Give your agent the repository URL and this prompt:
 
-> Set up MCDMA for my Mac Studio and Spark(s) from https://github.com/ashhart/mcdma. Read AGENTS.md, docs/user-guide.md, docs/agent-setup.md and docs/install.md first. Inspect the actual target machines before changing anything. Record a private inventory and work through the checkpoints in order, beginning with one Spark. Prepare everything you can, then guide me through the exact Recovery and approval steps that need me. Verify real READ and WRITE transfers in both directions before reporting success. Set up standalone inference baselines if I choose that stage, but do not claim an engine uses MCDMA without an implemented connector and a verified transfer. Keep a resumable setup record and do not publish my machine details.
+> Set up MCDMA for my Mac Studio or compatible MacBook Pro host(s) and Spark(s) from https://github.com/ashhart/mcdma. Read AGENTS.md, docs/user-guide.md, docs/agent-setup.md and docs/install.md first. Inspect the actual target machines before changing anything. Record a private inventory and work through the checkpoints in order, beginning with one Spark. Prepare everything you can, then guide me through the exact Recovery and approval steps that need me. Verify real READ and WRITE transfers in both directions before reporting success. Set up standalone inference baselines if I choose that stage, but do not claim an engine uses MCDMA without an implemented connector and a verified transfer. Keep a resumable setup record and do not publish my machine details.
 
 An agent with terminal and SSH access can build software, prepare configuration, run tests and report what remains. It cannot perform physical cabling or substitute a chat confirmation for macOS approval. The [agent runbook](agent-setup.md) defines the checkpoints and what evidence to save.
 
@@ -40,6 +40,21 @@ An agent with terminal and SSH access can build software, prepare configuration,
 One Spark and one QSFP28 cable are sufficient to start. These are **QSFP28**, not SFP28 connectors. The named DAC was validated at 100GBASE-CR4 with RS-FEC; do not infer a cable's supported speed from its connector alone. This guide does not establish support for other NIC families, enclosures or macOS builds.
 
 The Helios has one host connection for the card. Both CX5 ports share that Thunderbolt PCIe tunnel; two network cables do not create two 100 Gb/s paths into Studio memory. The September 17 tests measured about **50.6 Gbit/s into the Studio** and **29.4 Gbit/s out**, using Studio-initiated READ and WRITE with the conditions in the [validation report](validation-2026-09-17.md). Those are measured payload rates for that setup, not guaranteed rates for yours.
+
+### MacBook configurations
+
+You can plan a setup around a **compatible Apple-silicon MacBook Pro and one Spark**, or **two compatible MacBook Pros and two Sparks**. The documented measurements and hardware acceptance here are from the M3 Ultra Studio; these MacBook configurations still need their own installation, RDMA correctness and performance checks. They are candidate layouts, not a claim that every MacBook or macOS version is supported.
+
+For a Thunderbolt 5 setup, confirm the exact MacBook model has Thunderbolt 5. For example, Apple's [14-inch MacBook Pro with M4 Pro or M4 Max specifications](https://support.apple.com/en-gb/121553) list Thunderbolt 5 ports. A USB-C connector alone does not establish Thunderbolt support or bandwidth. OWC lists Thunderbolt 3/4/5 and USB4 host connectivity for the [Helios 5S](https://www.owc.com/solutions/mercury-helios-5s), but enclosure connectivity alone does not validate this experimental RDMA driver on another host.
+
+Each MacBook used as an RDMA endpoint needs its **own powered Helios 5S, CX5 card and Thunderbolt connection**, plus the same exact macOS build, SDK, driver/provider and approval checks in this guide. One Helios cannot attach the same PCIe card to two Mac hosts at once. For two MacBooks, install and verify each Mac independently and keep separate build, address and result records.
+
+| Candidate layout | Required Mac-side hardware | Start by verifying |
+|---|---|---|
+| One MacBook Pro + one Spark | One Helios 5S, one CX5, one Thunderbolt cable and one QSFP28 DAC | READ and WRITE initiated from both endpoints |
+| Two MacBook Pros + two Sparks | Two Helios 5S enclosures, two CX5 cards, two Thunderbolt cables and two Mac-to-Spark QSFP28 DACs | Each MacBook-to-Spark pair independently, then concurrent operation |
+
+For the second layout, pair MacBook A with Spark 1 and MacBook B with Spark 2, retaining the Sparks' existing inter-Spark link. Each Mac then has its own Thunderbolt host path; the overall topology and aggregate performance still require validation. Connecting all four machines does not create a shared memory pool or an installed inference cluster: routing, workload placement and engine communication must be implemented explicitly.
 
 ## 2. Plug it in
 
@@ -81,11 +96,34 @@ flowchart TB
 
 Existing USB-C links can stay connected if they are working, but are not part of this CX5 RDMA setup. Identify their actual interfaces and transport before using them. MCDMA does not automatically combine their bandwidth with the QSFP links. Maintain a known-working management route while changing network configuration.
 
+### MacBook alternatives
+
+For one MacBook, use this single pair:
+
+```mermaid
+flowchart LR
+    M["Compatible MacBook Pro"] <-->|"Thunderbolt"| H["Powered Helios 5S + CX5"]
+    H <-->|"QSFP28 DAC"| S["Spark"]
+```
+
+For two MacBooks and two Sparks, use two separate enclosure/card paths:
+
+```mermaid
+flowchart LR
+    MA["MacBook Pro A"] <-->|"Thunderbolt"| HA["Helios 5S A + CX5 A"]
+    HA <-->|"QSFP28 DAC"| SA["Spark 1"]
+    SA <-->|"existing inter-Spark CX7 link"| SB["Spark 2"]
+    SB <-->|"QSFP28 DAC"| HB["Helios 5S B + CX5 B"]
+    HB <-->|"Thunderbolt"| MB["MacBook Pro B"]
+```
+
+These diagrams describe candidate cabling, not automatic forwarding through the Sparks. Keep a separate management connection to every machine. Use the following checkpoints on each Mac, substituting the actual endpoint wherever the tested recipe says Studio.
+
 ## 3. Inventory before installation
 
 Save a private copy of [the setup record](examples/setup-record.md) as `local/setup-record.md` in your checkout. Do not paste passwords, SSH private keys or access tokens into it. The repository ignores `local/` and `results/`.
 
-**On the target Studio**, record:
+**On each target Mac, Studio or MacBook Pro**, record:
 
 ```sh
 sw_vers -buildVersion
@@ -118,7 +156,7 @@ Verify key-based SSH to both target hosts over the management network. The cross
 
 ## 4. Build and install MCDMA
 
-Use the commands in [the installation guide](install.md) as the single installation recipe. Run Mac commands on the **Studio**, not on a MacBook used to control it. Keep the same checked-out source revision on both endpoints and record `git rev-parse HEAD`.
+Use the commands in [the installation guide](install.md) as the single installation recipe. Run Mac commands on the **Mac physically hosting the Helios and CX5**, whether that is a Studio or a MacBook Pro; a separate laptop used only for remote control is not the RDMA endpoint. Keep the same checked-out source revision on both endpoints and record `git rev-parse HEAD`.
 
 Work through these checkpoints:
 

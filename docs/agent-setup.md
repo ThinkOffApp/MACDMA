@@ -4,7 +4,7 @@ Read [AGENTS.md](../AGENTS.md), [the user guide](user-guide.md), [install.md](in
 
 ## Operating rules
 
-- Work on the user's designated Studio and Sparks, not whichever machine runs the agent.
+- Work on the user's designated Mac hosts and Sparks, not whichever machine runs the agent; a compatible MacBook Pro may be the endpoint rather than the Studio.
 - Start with read-only discovery and one Spark. Preserve the existing inter-Spark and management links.
 - Use a single recorded source revision across the installation. Preserve dirty checkouts and existing environments.
 - Keep commands, results and progress in ignored `local/` and `results/`. Copy [the record template](examples/setup-record.md) into `local/` before filling it in.
@@ -12,6 +12,8 @@ Read [AGENTS.md](../AGENTS.md), [the user guide](user-guide.md), [install.md](in
 - Explain the documented development security changes before requesting owner action. Existing explicit authorization counts; do not repeatedly ask for it. Never infer approval from elapsed time.
 - Do not use speculative firmware updates, hot unload, live cable removal, unrelated security changes or permissive SSH settings to work around failures.
 - A failed checkpoint stays failed until evidence changes. Diagnose the actual error instead of rerunning privileged commands blindly.
+
+For the user guide's MacBook layouts, verify each host's actual Thunderbolt capabilities and exact OS/SDK compatibility first. The published hardware results are Studio results, so do not report a MacBook configuration as validated until it passes. Two MacBook endpoints require separate enclosure/card installations and separate setup records; start with one Mac-to-Spark pair and preserve the inter-Spark link.
 
 ## A. Discover and prepare
 

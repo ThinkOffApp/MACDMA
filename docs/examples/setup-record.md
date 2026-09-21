@@ -7,7 +7,9 @@ Do not commit the completed copy or store credentials here.
 
 - Date:
 - Operator / agent:
-- Target: one link / two links / standalone engines:
+- Target layout: Studio / one MacBook and one Spark / two MacBooks and two Sparks / standalone engines:
+- Mac host label for this record, one record per Mac:
+- Exact Mac model and Thunderbolt generation:
 - Source revision:
 - Last passed checkpoint (A-F):
 - Current blocker and evidence:
@@ -15,7 +17,7 @@ Do not commit the completed copy or store credentials here.
 - Owner actions completed:
 - Backup / rollback location:
 
-## Studio
+## Mac host, Studio or MacBook Pro
 
 - Management SSH destination:
 - OS build / architecture:
@@ -33,8 +35,8 @@ Do not commit the completed copy or store credentials here.
 |---|---|---|
 | Physical CX5 port label | | |
 | Physical CX7 port label | | |
-| Studio interface / hardware MAC | | |
-| Studio verbs device / GID | | |
+| Mac interface / hardware MAC | | |
+| Mac verbs device / GID | | |
 | Spark SSH destination / OS | | |
 | Spark interface / hardware MAC | | |
 | Spark verbs device / GID / RoCE v2 index | | |
@@ -46,7 +48,7 @@ Do not commit the completed copy or store credentials here.
 
 ## Transfer evidence
 
-| Link / posting mode | Studio WRITE | Studio READ | Spark WRITE | Spark READ | Private result path |
+| Link / posting mode | Mac WRITE | Mac READ | Spark WRITE | Spark READ | Private result path |
 |---|---|---|---|---|---|
 | 1 / kernel | | | | | |
 | 1 / direct | | | | | |
