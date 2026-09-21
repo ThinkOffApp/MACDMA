@@ -69,3 +69,7 @@ Keep the repository focused on the driver, build/setup tools and validation. Ret
 Run the relevant offline tests for code changes, and distinguish those results from hardware checks. A change to the installer or restore helper requires a documented fresh-machine hardware check before claiming that installation route is validated.
 
 Do not push or create a release merely because setup succeeded. When publication is requested, inspect the entire candidate tree, hidden files, images and metadata, history, commit identities and destination for private information, secrets, generated junk and licensing issues. Owner credit “Ash Hart” and this repository URL are intentionally public; private paths, account credentials and hardware addresses are not. Resolve findings before uploading.
+
+## First-time user setup
+
+For a new Studio/Spark installation, follow [the user guide](docs/user-guide.md) and [agent setup runbook](docs/agent-setup.md), using [install.md](docs/install.md) as the canonical command recipe. Keep the completed [setup record](docs/examples/setup-record.md) in ignored `local/`. Distinguish verified RDMA from standalone inference and the still-missing installed engine connector.

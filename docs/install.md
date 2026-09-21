@@ -19,7 +19,7 @@ Read the removal section before starting. An experimental kernel driver can cras
 | Link settings | Ethernet MTU 9000, RC path MTU 4096 |
 | Build tools | Xcode with the macOS 27 SDK, Apple command-line tools and Python 3 |
 
-The wider lab has two Sparks, but the published latency figures cover one directly connected Spark and the Studio. A second Spark is not needed for this setup. QSFP28 is the cable connector, not SFP28. The NIC's nominal port rate is not a claim of measured Thunderbolt throughput or two-port scaling: the driver's PCIe-path readout shows the Thunderbolt 5 tunnel as PCIe Gen4 x4 with a 128-byte maximum payload on every hop, and no validated sustained-bandwidth figure has been published yet.
+The wider lab has two Sparks, but the published latency figures cover one directly connected Spark and the Studio. A second Spark is not needed for this setup. QSFP28 is the cable connector, not SFP28. The NIC's nominal port rate is not a claim of measured Thunderbolt throughput or two-port scaling: the driver's PCIe-path readout shows the Thunderbolt 5 tunnel as PCIe Gen4 x4 with a 128-byte maximum payload on every hop, and both ports share that host path. The [17 September report](validation-2026-09-17.md) records about 50.6 Gbit/s into Studio memory and 29.4 Gbit/s out with Studio-initiated READ/WRITE, plus bounded concurrent-port checks.
 
 The source accepts exact builds `26A428` and the earlier inspected beta `26A5425a`; this guide and restore helper target `26A428`. An arbitrary macOS 27 build is not sufficient. Check `sw_vers -buildVersion`, and do not remove the build guard to force an unsupported version to load.
 

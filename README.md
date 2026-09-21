@@ -45,6 +45,8 @@ A first end-to-end hand-off has run: **Qwen3-4B in MXFP4** was prefilled by vLLM
 
 ## Get started
 
+**New setup? Start with the [Studio and Spark user guide](docs/user-guide.md)** for hardware, wiring diagrams, checkpoints and inference-engine setup, or give your agent the [setup runbook](docs/agent-setup.md).
+
 ### Hardware used
 
 | Part | Tested setup |
