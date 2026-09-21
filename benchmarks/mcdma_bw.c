@@ -30,6 +30,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <time.h>
@@ -53,6 +54,7 @@ struct options {
     unsigned bytes, depth, qps, cq_per_qp, repeats, warmup, mtu_bytes, gid_index, timeout_s;
     uint64_t total, max_region, verify_bytes; unsigned psn;
     int initiator; const char *device;
+    const char *payload_path, *dump_path; /* bounded, single-trial resident payload mode */
 };
 
 struct remote_info {
@@ -78,6 +80,7 @@ struct bench {
     struct line_reader in;
     struct window *windows; unsigned window_count;
     unsigned post_retries, trials_run, trials_failed;
+    uint64_t payload_len, payload_crc;
     /* Per-trial bookkeeping. */
     uint64_t posted[MAX_QPS], completed[MAX_QPS], target[MAX_QPS], recv_posted[MAX_QPS], recv_done[MAX_QPS];
     unsigned inflight[MAX_QPS];
@@ -189,6 +192,7 @@ static void usage(void) {
     fputs("usage: mcdma-bw --role initiator|responder --device NAME [--gid-index N]\n"
           "  --op write|read|send --bytes N[K|M] --depth D --qps Q [--cq-per-qp] --total N[K|M|G]\n"
           "  [--repeats R] [--warmup W] [--mtu 1024|2048|4096] [--finish auto|flag|imm]\n"
+          "  [--payload SOURCE | --dump NEW_DESTINATION] (one resident transfer; see docs)\n"
           "  [--verify-bytes N] [--max-region N] [--timeout SECONDS] [--psn N]\n",stderr);
     exit(2);
 }
@@ -219,10 +223,18 @@ static void parse(struct bench *b,int argc,char **argv) {
         else if (!strcmp(a,"--max-region")) o->max_region=parse_size(v,&ok);
         else if (!strcmp(a,"--timeout")) o->timeout_s=(unsigned)parse_size(v,&ok);
         else if (!strcmp(a,"--psn")) o->psn=(unsigned)parse_size(v,&ok);
+        else if (!strcmp(a,"--payload")) o->payload_path=v;
+        else if (!strcmp(a,"--dump")) o->dump_path=v;
         else usage();
         if (!ok) usage();
     }
     if (o->initiator<0 || !o->device) usage();
+    if (o->payload_path || o->dump_path) {
+        const int source=o->op==OP_READ ? !o->initiator : o->initiator;
+        if ((o->payload_path && o->dump_path) || o->op==OP_SEND || o->qps!=1 || o->repeats!=1 || o->warmup)
+            fatal("payload_requires_one_qp_one_trial_no_warmup_write_or_read",0);
+        if (!!o->payload_path!=source) fatal("payload_file_on_wrong_side",0);
+    }
     if (o->bytes<MIN_BYTES || o->bytes>MAX_BYTES || o->bytes%8) fatal("bytes_out_of_range_4KiB_16MiB",0);
     if (o->depth<1 || o->depth>MAX_DEPTH) fatal("depth_out_of_range_1_64",0);
     if (o->qps<1 || o->qps>MAX_QPS) fatal("qps_out_of_range_1_8",0);
@@ -365,11 +377,15 @@ static void connect_queues(struct bench *b) {
     char qpns[MAX_QPS*12]={0};
     for (unsigned q=0;q<o->qps;++q) { char one[12]; snprintf(one,sizeof(one),"%s%u",q?",":"",b->qp[q]->qp_num); strcat(qpns,one); }
     msg("ENDPOINT v=1 nonce=%" PRIu64 " role=%s op=%s bytes=%u depth=%u qps=%u cqpq=%u cqe=%u total=%" PRIu64
-        " mtu=%u imm_recv=%u rd=%u psn=%u rkey=%u addr=%" PRIu64 " length=%" PRIu64 " gid=%s qpn=%s",
+        " mtu=%u imm_recv=%u rd=%u psn=%u rkey=%u addr=%" PRIu64 " length=%" PRIu64 " gid=%s qpn=%s payload=%u",
         b->nonce,o->initiator?"initiator":"responder",op_names[o->op],o->bytes,b->depth_local,o->qps,o->cq_per_qp,
         b->cqe_granted,o->total,o->mtu_bytes,b->imm_recv,b->rd_atomic,o->psn,b->mr->rkey,(uint64_t)(uintptr_t)b->region,
-        b->region_bytes,b->gid_text,qpns);
+        b->region_bytes,b->gid_text,qpns,(unsigned)!!(o->payload_path || o->dump_path));
     char line[LINE_BYTES]; expect_line(b,"ENDPOINT",line,sizeof(line));
+    char payload_mode[8];
+    const int remote_payload=field(line,"payload",payload_mode,sizeof(payload_mode)) ?
+        (int)field_u64(line,"payload",1) : 0;
+    if (remote_payload!=!!(o->payload_path || o->dump_path)) fatal("protocol_payload_mode_mismatch",0);
     struct remote_info *r=&b->remote;
     if (field_u64(line,"v",UINT64_MAX)!=1) fatal("protocol_version",0);
     if (!field(line,"role",r->role,sizeof(r->role)) || !field(line,"op",r->op,sizeof(r->op)) || !field(line,"gid",r->gid,sizeof(r->gid))) fatal("protocol_endpoint_fields",0);
@@ -542,9 +558,62 @@ static void build_windows(struct bench *b) {
 static void poison_windows(struct bench *b) {
     for (unsigned i=0;i<b->window_count;++i) memset(b->region+b->windows[i].offset,0xa5,(size_t)b->windows[i].length);
 }
+/* CRC-64/ECMA detects accidental corruption; it is not authentication. */
+static uint64_t payload_crc64(const unsigned char *data,uint64_t length) {
+    uint64_t crc=0;
+    for (uint64_t i=0;i<length;++i) {
+        crc^=(uint64_t)data[i]<<56;
+        for (unsigned bit=0;bit<8;++bit)
+            crc=(crc<<1)^((crc>>63) ? UINT64_C(0x42f0e1eba9ea3693) : 0);
+    }
+    return crc;
+}
+static void prepare_payload(struct bench *b) {
+    if (!b->o.payload_path && !b->o.dump_path) return;
+    const uint64_t capacity=(uint64_t)b->depth*b->o.bytes;
+    char line[LINE_BYTES];
+    if (b->o.payload_path) {
+        FILE *f=fopen(b->o.payload_path,"rb"); if (!f) fatal("payload_open",errno);
+        struct stat st;
+        if (fstat(fileno(f),&st) || !S_ISREG(st.st_mode) || st.st_size<=0 || (uint64_t)st.st_size>capacity)
+            fatal("payload_must_fit_agreed_resident_slots",0);
+        b->payload_len=(uint64_t)st.st_size;
+        memset(b->region,0,(size_t)capacity);
+        if (fread(b->region,1,(size_t)b->payload_len,f)!=b->payload_len || fgetc(f)!=EOF || ferror(f))
+            fatal("payload_read_or_size_changed",0);
+        if (fclose(f)) fatal("payload_close",errno);
+        b->payload_crc=payload_crc64(b->region,b->payload_len);
+        msg("PAYLOAD bytes=%" PRIu64 " crc64=%" PRIu64,b->payload_len,b->payload_crc);
+        expect_line(b,"PAYLOAD_READY",line,sizeof(line));
+    } else {
+        expect_line(b,"PAYLOAD",line,sizeof(line));
+        b->payload_len=field_u64(line,"bytes",capacity);
+        b->payload_crc=field_u64(line,"crc64",UINT64_MAX);
+        if (!b->payload_len) fatal("payload_empty",0);
+        memset(b->region,0xa5,(size_t)capacity);
+        msg("PAYLOAD_READY");
+    }
+    b->o.total=b->payload_len;
+    printf("BW_PAYLOAD bytes=%" PRIu64 " crc64=%016" PRIx64 " capacity=%" PRIu64 " mode=resident_single_trial\n",
+           b->payload_len,b->payload_crc,capacity);
+}
 static void fill_slots(struct bench *b,unsigned trial) {
+    if (b->payload_len) return; /* prepared once, never recycled */
     const unsigned slots=b->o.qps*b->depth;
     for (unsigned s=0;s<slots;++s) fill_words(b->region+(uint64_t)s*b->o.bytes,b->o.bytes,slot_seed(b->nonce,trial,s),0);
+}
+static uint64_t verify_payload(struct bench *b,uint64_t *verified) {
+    *verified=b->payload_len;
+    return payload_crc64(b->region,b->payload_len)!=b->payload_crc;
+}
+static void dump_landed(struct bench *b) {
+    /* Only a successful checksum/guard result reaches this function.  Never
+     * overwrite an existing file, a symlink or /dev/null. */
+    FILE *f=fopen(b->o.dump_path,"wbx"); if (!f) fatal("dump_open_exclusive",errno);
+    const int short_write=fwrite(b->region,1,(size_t)b->payload_len,f)!=b->payload_len;
+    const int close_error=fclose(f);
+    if (short_write || close_error) { unlink(b->o.dump_path); fatal("dump_write_or_close",0); }
+    printf("BW_DUMP bytes=%" PRIu64 " checksum=crc64-ecma verified=1\n",b->payload_len);
 }
 static uint64_t verify_windows(struct bench *b,unsigned trial,uint64_t *verified) {
     uint64_t bad=0; *verified=0;
@@ -608,20 +677,20 @@ static void print_result(struct bench *b,const struct trial_result *t,const char
     printf("BW_RESULT side=%s trial=%u warmup=%u op=%s bytes=%u depth=%u depth_effective=%u qps=%u cq_per_qp=%u cqe=%u mtu=%u"
            " total_bytes=%" PRIu64 " wrs=%" PRIu64 " seconds=%.6f gbit=%.4f completions=%" PRIu64 " errors=%" PRIu64 " cpu_pct=%.1f"
            " responder_seconds=%.6f responder_cpu_pct=%.1f verified_bytes=%" PRIu64 " mismatches=%" PRIu64 " finish=%s rd_atomic=%u"
-           " post_retries=%u guard_ok=%u\n",
+           " post_retries=%u guard_ok=%u measurement=%s\n",
            side,t->trial,t->warmup,op_names[b->o.op],b->o.bytes,b->o.depth,b->depth_effective,b->o.qps,b->o.cq_per_qp,b->cqe_granted,
            b->o.mtu_bytes,t->total_bytes,t->wrs,t->seconds,gbit,t->completions,t->errors,t->cpu_pct,t->responder_seconds,
-           t->responder_cpu_pct,t->verified,t->mismatches,b->finish_imm?"imm":"flag",b->rd_atomic,t->post_retries,t->guard_ok);
+           t->responder_cpu_pct,t->verified,t->mismatches,b->finish_imm?"imm":"flag",b->rd_atomic,t->post_retries,t->guard_ok,b->payload_len?"resident-payload":"pattern-bandwidth");
     if (!header_done) {
         puts("BW_CSV_HEADER side,trial,warmup,op,bytes,depth,depth_effective,qps,cq_per_qp,cqe,mtu,total_bytes,wrs,seconds,gbit,"
-             "completions,errors,cpu_pct,responder_seconds,responder_cpu_pct,verified_bytes,mismatches,finish,rd_atomic,post_retries,guard_ok");
+             "completions,errors,cpu_pct,responder_seconds,responder_cpu_pct,verified_bytes,mismatches,finish,rd_atomic,post_retries,guard_ok,measurement");
         header_done=1;
     }
     printf("BW_CSV %s,%u,%u,%s,%u,%u,%u,%u,%u,%u,%u,%" PRIu64 ",%" PRIu64 ",%.6f,%.4f,%" PRIu64 ",%" PRIu64 ",%.1f,%.6f,%.1f,%" PRIu64
-           ",%" PRIu64 ",%s,%u,%u,%u\n",
+           ",%" PRIu64 ",%s,%u,%u,%u,%s\n",
            side,t->trial,t->warmup,op_names[b->o.op],b->o.bytes,b->o.depth,b->depth_effective,b->o.qps,b->o.cq_per_qp,b->cqe_granted,
            b->o.mtu_bytes,t->total_bytes,t->wrs,t->seconds,gbit,t->completions,t->errors,t->cpu_pct,t->responder_seconds,
-           t->responder_cpu_pct,t->verified,t->mismatches,b->finish_imm?"imm":"flag",b->rd_atomic,t->post_retries,t->guard_ok);
+           t->responder_cpu_pct,t->verified,t->mismatches,b->finish_imm?"imm":"flag",b->rd_atomic,t->post_retries,t->guard_ok,b->payload_len?"resident-payload":"pattern-bandwidth");
     fflush(stdout);
 }
 static void plan_trial(struct bench *b,uint64_t *wrs) {
@@ -672,9 +741,9 @@ static int run_initiator_trial(struct bench *b,unsigned trial,unsigned warmup) {
     }
     t.seconds=now_s()-start; t.cpu_pct=t.seconds>0 ? (cpu_s()-cpu0)/t.seconds*100 : 0;
     t.completions=s.completions; t.errors=s.errors+(failed?1:0); t.post_retries=b->post_retries-retries_before;
-    if (b->o.op==OP_READ) { __atomic_thread_fence(__ATOMIC_SEQ_CST); t.mismatches=verify_windows(b,trial,&t.verified); }
+    if (b->o.op==OP_READ) { __atomic_thread_fence(__ATOMIC_SEQ_CST); t.mismatches=b->payload_len ? verify_payload(b,&t.verified) : verify_windows(b,trial,&t.verified); }
     t.guard_ok=guard_intact(b);
-    msg("COMPLETE trial=%u ok=%u",trial,!failed);
+    msg("COMPLETE trial=%u ok=%u",trial,!failed && !t.errors && !t.mismatches && t.guard_ok);
     expect_line(b,"DONE",line,sizeof(line));
     if (field_u64(line,"trial",UINT32_MAX)!=trial) fatal("protocol_done_trial",0);
     char text[64];
@@ -685,6 +754,7 @@ static int run_initiator_trial(struct bench *b,unsigned trial,unsigned warmup) {
     if (!field_u64(line,"guard_ok",1)) t.guard_ok=0;
     /* Drain any late completions so the next trial starts with an empty CQ. */
     for (unsigned c=0;c<b->cqs;++c) { struct ibv_wc wcs[POLL_BATCH]; int n; while ((n=ibv_poll_cq(b->cq[c],POLL_BATCH,wcs))>0) for (int i=0;i<n;++i) handle_wc(b,c,&wcs[i],&s); }
+    if (b->o.dump_path && !failed && !t.errors && !t.mismatches && t.guard_ok) dump_landed(b);
     print_result(b,&t,"initiator");
     return !failed && !t.errors && !t.mismatches && t.guard_ok;
 }
@@ -756,12 +826,14 @@ static int run_responder_trial(struct bench *b,unsigned trial,unsigned warmup) {
     t.seconds=now_s()-start; t.cpu_pct=t.seconds>0 ? (cpu_s()-cpu0)/t.seconds*100 : 0;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     if (b->finish_imm && s.finish_seen && s.imm_value!=(uint32_t)(expected&0xffffffffu)) { ++s.errors; fputs("BW_WC imm_mismatch\n",stderr); }
-    if (b->o.op!=OP_READ) t.mismatches=verify_windows(b,trial,&t.verified);
+    if (b->o.op!=OP_READ)
+        t.mismatches=b->payload_len ? verify_payload(b,&t.verified) : verify_windows(b,trial,&t.verified);
     if (!have_complete) expect_line(b,"COMPLETE",line,sizeof(line));
     if (field_u64(line,"trial",UINT32_MAX)!=trial) fatal("protocol_complete_trial",0);
     if (!field_u64(line,"ok",1)) ++s.errors;
     t.completions=s.completions; t.errors=s.errors+(failed?1:0); t.post_retries=b->post_retries-retries_before;
     t.guard_ok=guard_intact(b); t.responder_seconds=t.seconds; t.responder_cpu_pct=t.cpu_pct;
+    if (b->o.dump_path && !failed && !t.errors && !t.mismatches && t.guard_ok) dump_landed(b);
     msg("DONE trial=%u seconds=%.6f cpu_pct=%.1f verified=%" PRIu64 " mismatches=%" PRIu64 " errors=%" PRIu64 " completions=%" PRIu64 " guard_ok=%u",
         trial,t.seconds,t.cpu_pct,t.verified,t.mismatches,t.errors,t.completions,t.guard_ok);
     print_result(b,&t,"responder");
@@ -799,6 +871,7 @@ int main(int argc,char **argv) {
     build_windows(&b);
     b.depth_effective=b.depth; /* Agreed with the peer; both ends advertised their own bound. */
     negotiate_finish(&b);
+    prepare_payload(&b);
     printf("BW_SETUP depth=%u depth_effective=%u cqs=%u cqe=%u qp_wr=%u rd_atomic=%u dest_rd=%u region_bytes=%" PRIu64 " windows=%u finish=%s\n",
            b.depth,b.depth_effective,b.cqs,b.cqe_granted,b.qp_wr,b.rd_atomic,b.dest_rd,b.region_bytes,b.window_count,b.finish_imm?"imm":"flag");
     fflush(stdout);

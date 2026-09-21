@@ -20,6 +20,34 @@ import time
 import threading
 
 
+def mac_octets(value):
+    """Accept six complete hexadecimal octets, padded or unpadded."""
+    if not re.fullmatch(r'[0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5}', value):
+        raise ValueError('Malformed link-layer address')
+    return bytes(int(octet, 16) for octet in value.split(':'))
+
+
+def ndp_has_neighbor(output, gid, interface, address):
+    """Match the complete static NDP row, never a substring of another MAC."""
+    try:
+        wanted_gid = ipaddress.IPv6Address(gid.split('%', 1)[0])
+        wanted_mac = mac_octets(address)
+    except ValueError:
+        return False
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[2] != interface or fields[3].lower() != 'permanent':
+            continue
+        try:
+            seen_gid = ipaddress.IPv6Address(fields[0].split('%', 1)[0])
+            seen_mac = mac_octets(fields[1])
+        except ValueError:
+            continue
+        if seen_gid == wanted_gid and seen_mac == wanted_mac and fields[4].upper() in ('R', 'S', 'D', 'P'):
+            return True
+    return False
+
+
 class Endpoint:
     STDERR_LIMIT = 1024 * 1024
 
@@ -318,7 +346,7 @@ def main():
         local, mac_address = descriptor(mac.line())
         remote, spark_address = descriptor(spark.line())
         neighbour = run(args.mac_host, ['ndp', '-n', remote[5]+'%'+args.mac_interface]).lower()
-        if spark_address not in neighbour:
+        if not ndp_has_neighbor(neighbour, remote[5], args.mac_interface, spark_address):
             raise RuntimeError('Mac needs the peer static IPv6 neighbour before QP connection')
         neighbour = run(args.peer_host, ['ip', '-6', 'neigh', 'show', 'to', local[5], 'dev', args.peer_interface]).lower()
         if 'lladdr '+mac_address not in neighbour:

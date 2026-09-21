@@ -1,5 +1,6 @@
 /* Original native-librdma acceptance check; no substitute device enumeration. */
 #include <infiniband/verbs.h>
+#include "../include/cx5_device.h"
 #include <stdio.h>
 #include <string.h>
 #include <dlfcn.h>
@@ -39,7 +40,7 @@ int main(int argc, char **argv) {
         if (ibv_query_device(context, &attr)) {
             perror("ibv_query_device"); ++errors; ibv_close_device(context); continue;
         }
-        const int match = attr.vendor_id == 0x15b3 && attr.vendor_part_id == 0x1019;
+        const int match = mcdma_supported_device(attr.vendor_id, attr.vendor_part_id);
         cx5 += match;
         printf("device=%s vendor=0x%x part=0x%x ports=%u cx5=%d\n",
                ibv_get_device_name(devices[i]), attr.vendor_id,
@@ -69,6 +70,8 @@ int main(int argc, char **argv) {
     }
     ibv_free_device_list(devices);
     if (list_only) { printf("enumeration_only=1 hardware_verbs_test=0\n"); return 0; }
+    /* Retain the legacy aggregate key for existing runner parsers; per-device
+       vendor/part fields above always report the actual PCI identity. */
     printf("native_cx5=%d native_cx5_active_ports=%d errors=%d\n", cx5, active, errors);
     /* Passing proves native discovery/query only; WRITE/READ requires a separate test. */
     return errors ? 2 : ((require_active ? active : cx5) ? 0 : 1);

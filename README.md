@@ -29,6 +29,10 @@ The arrow names the initiator: a Mac-initiated READ fetches bytes from the Spark
 
 **Version distinction:** the measurements above used lab driver 0.1.17; this repository now builds **0.1.18**. The new driver has correctness, bounded lifecycle and sustained-bandwidth results, but no matched 0.1.17 versus 0.1.18 performance comparison.
 
+The latest source includes reviewed community contributions for macOS neighbour matching, bounded real-payload correctness checks and additional device discovery; see [source follow-ups](docs/pr-followups-2026-09-21.md) for validation and limitations.
+
+ConnectX-4 Lx PF (`15b3:1015`) is also accepted in source following a contributor report; see [validation scope](docs/hardware-validation.md#additional-card-and-peer-support).
+
 MCDMA is an experimental native macOS RDMA driver and userspace verbs provider for Mellanox ConnectX-5 Ex, developed by **Ash Hart**. The NICs move the payload; the CPU still submits work and observes completions.
 
 ## Integration with inference engines

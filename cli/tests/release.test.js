@@ -137,3 +137,14 @@ test('SSH aliases cannot inject options and multiplex sockets use a private dire
   assert.equal(fs.statSync(dir).mode & 0o777,0o700);
   exec.dispose([]);assert.equal(fs.existsSync(dir),false);
 });
+
+
+test('PCI discovery preserves supported identities and rejects other generations', () => {
+  const { parsePci } = require('../lib/macinfo');
+  const data = { SPPCIDataType: ['0x1015', '0x1019', '0x1017'].map((device, i) => ({
+    'sppci_vendor-id': '0x15b3', 'sppci_device-id': device, sppci_slot_name: `test@${i},0,0`
+  })) };
+  assert.deepEqual(parsePci(JSON.stringify(data)).cards.map(c => [c.deviceId, c.name, c.supported]), [
+    ['0x1015', 'ConnectX-4 Lx', true], ['0x1019', 'ConnectX-5 Ex', true], ['0x1017', 'ConnectX-5', false]
+  ]);
+});

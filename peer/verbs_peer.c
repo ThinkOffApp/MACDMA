@@ -3,6 +3,7 @@
 #define _DARWIN_C_SOURCE 1
 #endif
 #include <infiniband/verbs.h>
+#include "../include/cx5_device.h"
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -178,14 +179,17 @@ int main(int argc,char **argv) {
     struct ibv_context *ctx=NULL;
     for (int i=0;i<count;++i) if (!strcmp(ibv_get_device_name(list[i]),argv[1])) ctx=ibv_open_device(list[i]);
     ibv_free_device_list(list); if (!ctx) fail("open device");
+    struct ibv_port_attr port; if (ibv_query_port(ctx,1,&port)) fail("query port");
+    if (port.state!=IBV_PORT_ACTIVE || port.link_layer!=IBV_LINK_LAYER_ETHERNET) {
+        fputs("QSFP port is not active Ethernet\n",stderr); return 2;
+    }
     if (initiator || responder) {
         struct ibv_device_attr device={0};
-        if (ibv_query_device(ctx,&device) || device.vendor_id!=0x15b3 || device.vendor_part_id!=0x1019) {
-            fputs("Native initiator must be the physical CX5 Ex\n",stderr); return 2;
+        if (ibv_query_device(ctx,&device)) fail("query device");
+        if (!mcdma_native_peer(device.vendor_id,device.vendor_part_id,port.link_layer)) {
+            fputs("Native peer must be a supported ConnectX Ethernet device\n",stderr); return 2;
         }
     }
-    struct ibv_port_attr port; if (ibv_query_port(ctx,1,&port)) fail("query port");
-    if (port.state!=IBV_PORT_ACTIVE || port.link_layer!=IBV_LINK_LAYER_ETHERNET) { fputs("QSFP port is not active Ethernet\n",stderr); return 2; }
     if (path_mtu>port.active_mtu || path_mtu>port.max_mtu) {
         fprintf(stderr,"Requested path MTU exceeds port active/max MTU (%u/%u)\n",
                 128u<<port.active_mtu,128u<<port.max_mtu); ibv_close_device(ctx); return 2;

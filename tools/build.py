@@ -27,6 +27,9 @@ if len(sys.argv)>1 and sys.argv[1]=='test':
     run(['clang++','-std=c++17','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
          '-Iinclude','tests/test_command_wait.cpp','-o',BUILD/'test-command-wait'])
     run([BUILD/'test-command-wait'])
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
+         '-Iinclude','tests/test_device_identity.c','-o',BUILD/'test-device-identity'])
+    run([BUILD/'test-device-identity'])
     run(['clang++','-std=c++17','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
          '-Iinclude','tests/test_pointer_index.cpp','-o',BUILD/'test-pointer-index'])
     run([BUILD/'test-pointer-index'])
@@ -66,6 +69,9 @@ if len(sys.argv)>1 and sys.argv[1]=='test':
     run([sys.executable,'-B','tests/test_lifecycle_torture.py'])
     run([sys.executable,'-B','tests/test_bw_tools.py'])
     run([sys.executable,'-B','tests/test_bw_guard.py'])
+    run([sys.executable,'-B','tests/test_ndp_neighbor.py'])
+    run([sys.executable,'-B','tests/test_bw_payload.py'])
+    run([sys.executable,'-B','tests/test_bw_payload_trial.py'])
     sys.exit(0)
 if len(sys.argv)>1 and sys.argv[1]=='native':
     ms=sdk('macosx')
@@ -137,7 +143,7 @@ if len(sys.argv)>1 and sys.argv[1]=='native':
                             'com.apple.iokit.IORDMAFamily':'1.0'},
         'IOKitPersonalities':{'MCDMACX5Native':{
             'CFBundleIdentifier':'org.mcdma.cx5.native','IOClass':'MCDMACX5Native',
-            'IOProviderClass':'IOPCIDevice','IOPCIMatch':'0x101915b3',
+            'IOProviderClass':'IOPCIDevice','IOPCIMatch':'0x101915b3 0x101515b3',
             'IOPCITunnelCompatible':True,'IOProbeScore':20000,
             'MCDMALabEnabled':False,'MCDMAUserQueues':False,'MCDMAUserBlueFlame':False,
             'MCDMARelaxedOrdering':False,'MCDMAAckRequestEveryPacket':False,'MCDMAMaxReadRequestBytes':0}}})

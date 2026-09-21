@@ -7,6 +7,7 @@
 namespace cx5_test {
 struct Simulation {
     IOPCIDevice pci;
+    uint16_t vendor_id=0x15b3, device_id=0x1019;
     IOMemoryMap bar, uar;
     unsigned buffers=0, doorbells=0, calls=0;
     uint32_t next_id=1;

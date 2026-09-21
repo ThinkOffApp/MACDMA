@@ -148,6 +148,19 @@ void emit(Session &s,uint32_t consumer,uint16_t counter,uint8_t opcode=0,uint8_t
     entry[60]=uint8_t(counter>>8); entry[61]=uint8_t(counter);
     entry[55]=syndrome; entry[63]=uint8_t((opcode<<4)|((consumer>>5)&1));
 }
+void device_identity() {
+    for (const uint16_t part : {uint16_t(0x1019),uint16_t(0x1015)}) {
+        reset(); sim.device_id=part; Hca hca; AppleProvider provider;
+        assert(hca.start() && provider.prepare(hca));
+        alignas(8) uint8_t attr[0x130]{};
+        assert(AppleProvider::query_device(provider.device(),attr,nullptr)==0);
+        assert(get<uint32_t>(attr,0x20)==sim.vendor_id && get<uint32_t>(attr,0x24)==part);
+        assert(provider.dispose() && hca.stop());
+        assert(hca.transport.vendor_id()==0 && hca.transport.device_id()==0);
+    }
+    reset(); sim.device_id=0x1017; Hca unsupported; assert(!unsupported.start());
+    reset();
+}
 void callbacks_and_protection() {
     reset(); Hca hca; AppleProvider provider;
     assert(!provider.prepare(hca)); assert(hca.start());
@@ -822,6 +835,7 @@ static void review_immediate_orphan_reclaim() {
     puts("PASS immediate context reclaim after transient PD/CQ/QP destroy refusal");
 }
 int main() {
+    device_identity();
     review_immediate_orphan_reclaim();
     large_registration();
     process_death_teardown();

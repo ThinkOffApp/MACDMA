@@ -1,4 +1,5 @@
 #include "fake_kernel_transport.hpp"
+#include "cx5_device.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -26,12 +27,15 @@ IOReturn Transport::attach(IOPCIDevice *,IOService *) { return kIOReturnSuccess;
 IOReturn Transport::open() {
     // Match the real transport: a bound command queue cannot be opened twice.
     if (bound_) return kIOReturnBusy;
+    if (!mcdma_supported_device(sim.vendor_id,sim.device_id)) return kIOReturnUnsupported;
+    vendor_id_=sim.vendor_id; device_id_=sim.device_id;
     pci_=&sim.pci; sim.pci.inactive=&sim.removed;
     bar_=&sim.bar; bar_bytes_=sim.bar.length; sim.uar.writes=&sim.doorbells;
     bound_=true; return kIOReturnSuccess;
 }
 IOReturn Transport::close() {
     if (resources || (!sim.removed && (enabled || initialized || quarantined))) return kIOReturnBusy;
+    vendor_id_=device_id_=0;
     bound_=false; pci_=nullptr; bar_=bf_map_=nullptr; bf_base_=bf_uar_=0; bf_buffer_=bf_options_=0; bar_bytes_=0; return kIOReturnSuccess;
 }
 bool Transport::map_uar(uint64_t offset,bool wc) {

@@ -13,3 +13,16 @@ Raw runner output contains hostnames, paths, addresses, keys used for the test's
 A timing improvement alone does not prove the final pmap cache attribute, one-way wire latency, GPU memory access or a hardware latency floor.
 
 The [17 September 0.1.18 report](validation-2026-09-17.md) records sustained bandwidth, two concurrent ports and client termination during measured traffic, with the exact build identity for each check. These bounded checks do not validate mapped hot removal, foreign-QPN isolation or the driver's fallback orphan reclaim on hardware.
+
+## Additional card and peer support
+
+The source also accepts ConnectX-4 Lx PF `15b3:1015`, contributed in
+[PR #3](https://github.com/ashhart/MCDMA/pull/3). The contributor reports
+bidirectional RDMA and bandwidth tests; the maintainer has not reproduced
+those hardware tests. ConnectX-5 Ex `15b3:1019` remains the card used for the
+published results. Other IDs are rejected and `ibv_query_device` reports
+the attached card's actual identity. Offline tests cover both identities,
+the checker predicate and CLI classification, not hardware equivalence.
+
+Apple Thunderbolt RDMA peer selection from PR #3 is deferred pending
+separate end-to-end validation; this source still requires an Ethernet link.

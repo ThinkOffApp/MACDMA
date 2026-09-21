@@ -49,6 +49,8 @@ struct PcieLink {
 class Transport {
 public:
     IOReturn attach(IOPCIDevice *device, IOService *owner);
+    uint16_t vendor_id() const { return vendor_id_; }
+    uint16_t device_id() const { return device_id_; }
     // Reads the device's and its ancestors' PCIe control state into `text`
     // (registry diagnostic) and, when bytes is a power of two in 128..4096,
     // sets this device's maximum read request size, restored on close.
@@ -94,7 +96,7 @@ private:
     IOMapper *mapper_ = nullptr;
     Buffer queue_{};
     bool bound_ = false, opened_ = false, command_saved_ = false;
-    uint16_t saved_command_ = 0;
+    uint16_t saved_command_ = 0, vendor_id_ = 0, device_id_ = 0;
     uint8_t express_capability_ = 0;
     uint16_t saved_device_control_ = 0;
     bool device_control_saved_ = false;

@@ -15,12 +15,12 @@ MCDMA's statements come from this repository and its measurement notes. Nothing 
 | | MCDMA | MelonDMA |
 |---|---|---|
 | Card driven | ConnectX-5 Ex, MCX516A-CDAT, PCI `15b3:1019` | ConnectX-4 Lx PF, PCI `15b3:1015` |
-| Other ConnectX generations | Not tested; universal ConnectX support is not established ([README](../README.md#scope-and-limits)) | `SUPPORTED_HARDWARE.md` lists ConnectX-5, -6, -7 and -8 as "not supported or not claimed"; the published DEXT personality matches only `0x101515b3` |
+| Other ConnectX generations | ConnectX-4 Lx PF accepted with contributor-reported tests, not reproduced by the maintainer; universal ConnectX support is not established ([README](../README.md#scope-and-limits)) | `SUPPORTED_HARDWARE.md` lists ConnectX-5, -6, -7 and -8 as "not supported or not claimed"; the published DEXT personality matches only `0x101515b3` |
 | Host link | Thunderbolt 5, PCIe Gen4 x4, 128-byte maximum payload per the driver's PCIe-path readout | PCIe Gen3 x4 over Thunderbolt, per its CHANGELOG |
 | Network link | 100GBASE-CR4 with RS-FEC, validated 2026-09-15; earlier runs at 40 Gb/s | 40 Gb/s to the Spark peer, per its README and CHANGELOG |
 | Peer | One DGX Spark, ConnectX-7 | One DGX Spark, ConnectX-7 |
 
-Neither project drives the other's card. MelonDMA's hardware matrix excludes the ConnectX-5; MCDMA has not been tried on a ConnectX-4 Lx.
+MelonDMA's cited hardware matrix excludes the ConnectX-5. MCDMA now accepts ConnectX-4 Lx PF following a [contributor report](https://github.com/ashhart/MCDMA/pull/3); the maintainer's published measurements remain ConnectX-5 Ex results.
 
 ## Verbs surface
 

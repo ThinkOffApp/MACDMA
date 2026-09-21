@@ -1,6 +1,7 @@
 #include "kernel_transport.hpp"
 #include "apple_build.hpp"
 #include "command_wait.hpp"
+#include "cx5_device.h"
 #include <libkern/OSByteOrder.h>
 #include <libkern/c++/OSString.h>
 #include <string.h>
@@ -49,10 +50,11 @@ IOReturn Buffer::release() {
 IOReturn Transport::attach(IOPCIDevice *device, IOService *owner) {
     if (pci_ || !device || !owner) return kIOReturnBadArgument;
     if (!supported_build()) return kIOReturnUnsupported;
-    if (device->configRead16(0) != 0x15b3 || device->configRead16(2) != 0x1019)
-        return kIOReturnUnsupported;
+    const uint16_t vendor = device->configRead16(0), part = device->configRead16(2);
+    if (!mcdma_supported_device(vendor, part)) return kIOReturnUnsupported;
     if (!device->open(owner)) return kIOReturnExclusiveAccess;
     pci_ = device; pci_->retain(); owner_ = owner; opened_ = true;
+    vendor_id_ = vendor; device_id_ = part;
     saved_command_ = pci_->configRead16(4);
     if (saved_command_ == UINT16_MAX) { close(); return kIOReturnNoDevice; }
     command_saved_ = true;
@@ -303,6 +305,7 @@ IOReturn Transport::close() {
         pci_->release(); pci_ = nullptr;
     }
     owner_ = nullptr; bound_ = opened_ = command_saved_ = false;
+    vendor_id_ = device_id_ = 0;
     enabled=false; initialized=false; quarantined=false;
     return kIOReturnSuccess;
 }

@@ -50,6 +50,8 @@ def efficiency_pct(gbit, ceiling):
 def summarize(rows, ceiling=None):
     groups = {}
     for row in measured(rows):
+        if row.get('measurement', 'pattern-bandwidth') != 'pattern-bandwidth':
+            raise ValueError('Resident payload checks are not sustained-bandwidth measurements')
         key = tuple(row[k] for k in KEY)
         groups.setdefault(key, []).append(row)
     summary = []

@@ -82,6 +82,9 @@ def program_arguments(config, role, device, gid_index, args):
             '--timeout', str(args.timeout), '--verify-bytes', str(args.verify_bytes)]
     if config['cq_per_qp']:
         argv.append('--cq-per-qp')
+    if getattr(args, 'payload', None):
+        source = (role == 'responder') if config['op'] == 'read' else (role == 'initiator')
+        argv += ['--payload', args.payload] if source else ['--dump', args.dump]
     return argv
 
 
@@ -208,7 +211,7 @@ class Relay:
             self.header = header
         elif text.startswith('BW_CSV '):
             self.rows[endpoint].append(text[len('BW_CSV '):])
-        elif text.startswith('BW_RESULT ') or text.startswith('BW_CLAMP ') or text.startswith('BW_FINISH '):
+        elif text.startswith(('BW_RESULT ','BW_CLAMP ','BW_FINISH ','BW_PAYLOAD ','BW_DUMP ')):
             self.results.append(f'{endpoint.host}: {text}')
             print(f'{endpoint.host}: {text}', flush=True)
         elif text.startswith('BW_ERROR '):
@@ -285,6 +288,8 @@ def main(argv=None):
     parser.add_argument('--mac-cq-map', choices=['0', '1', '2'], default='0')
     parser.add_argument('--mac-user-post', choices=['0', '1'], default='0')
     parser.add_argument('--mac-user-bf', choices=['0', '64', '128', '64s', 'db'], default='0')
+    parser.add_argument('--payload', help='source-host file for one bounded resident transfer (READ source is responder)')
+    parser.add_argument('--dump', help='new receiver-host file; written only after full CRC64 verification')
     parser.add_argument('--output', type=Path, required=True, help='new directory for CSVs, logs and the manifest')
     parser.add_argument('--dry-run', action='store_true', help='print every command line; no SSH, no output directory')
     args = parser.parse_args(argv)
@@ -301,6 +306,12 @@ def main(argv=None):
         parser.error('Invalid GID index')
     if args.total < max(args.sizes) or args.repeats < 1 or args.warmup < 0 or args.timeout < 1 or args.verify_bytes < 8:
         parser.error('total must cover the largest request; repeats >= 1; warmup >= 0; timeout >= 1')
+    if bool(args.payload) != bool(args.dump):
+        parser.error('--payload and --dump must be supplied together')
+    if args.payload and (args.ops not in (['write'], ['read']) or args.qps != [1] or
+                         len(args.sizes) != 1 or len(args.depths) != 1 or len(args.initiators) != 1 or
+                         len(args.cq_modes) != 1 or args.repeats != 1 or args.warmup != 0):
+        parser.error('payload mode requires one WRITE or READ configuration, one QP, one repeat and no warmup')
     if args.output.exists():
         parser.error(f'refusing to overwrite existing output directory {args.output}')
     cq_modes = [1 if mode == 'per-qp' else 0 for mode in args.cq_modes]
@@ -360,7 +371,7 @@ def main(argv=None):
         mac_gid, mac_address = gids[args.mac_host]
         peer_gid, peer_address = gids[args.peer_host]
         neighbour = run(args.mac_host, ['ndp', '-n', peer_gid + '%' + args.mac_interface]).lower()
-        if peer_address not in neighbour:
+        if not cross.ndp_has_neighbor(neighbour, peer_gid, args.mac_interface, peer_address):
             raise RuntimeError('Mac needs the peer static IPv6 neighbour before QP connection')
         neighbour = run(args.peer_host, ['ip', '-6', 'neigh', 'show', 'to', mac_gid, 'dev', args.peer_interface]).lower()
         if 'lladdr ' + mac_address not in neighbour:

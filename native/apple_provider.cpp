@@ -317,7 +317,8 @@ int AppleProvider::query_device(void *device,void *attr,void *) {
     memset(attr,0,0x130);
     memcpy(static_cast<uint8_t *>(attr)+8,p->hca_->gid+8,8);
     write<uint64_t>(attr,0x10,max_mr_bytes); write<uint64_t>(attr,0x18,4096);
-    write<uint32_t>(attr,0x20,0x15b3); write<uint32_t>(attr,0x24,0x1019);
+    write<uint32_t>(attr,0x20,p->hca_->transport.vendor_id());
+    write<uint32_t>(attr,0x24,p->hca_->transport.device_id());
     write<uint32_t>(attr,0x2c,resource_limit); write<uint32_t>(attr,0x30,31);
     write<uint32_t>(attr,0x48,cx5::max_rdma_sge); write<uint32_t>(attr,0x4c,cx5::max_rdma_sge);
     write<uint32_t>(attr,0x54,resource_limit); write<uint32_t>(attr,0x58,31);
