@@ -59,7 +59,27 @@ The README command, BlueFlame-64, RC path MTU 1024, 1000 timed operations per ve
 
 (1) Copied from the README headline table, not re-measured: Mac Studio M3 Ultra and one DGX Spark, lab driver 0.1.17, continuous Metal keepalive on, 40 Gb/s link, pooled over three runs. Our runs differ in the Mac, the driver version (0.1.18), the keepalive (off) and the link rate (100 Gb/s), so the column is context, not a matched comparison.
 
-All 8,000 Mac samples and 8,000 GX10 samples (4 runs x 2 verbs x 1000) completed. Keepalive-on runs on this MacBook were not taken, so the effect of the keepalive here is unknown.
+All 8,000 Mac samples and 8,000 GX10 samples (4 runs x 2 verbs x 1000) completed. These four runs started six to seven minutes after the Mac booted. Later runs on the same boot were faster; see the next section.
+
+### Later runs and a keepalive A/B
+
+From 19:18 UTC, 20 to 22 minutes after boot, the same 4 KiB / MTU 1024 / BlueFlame-64 command ran nine more times: three keepalive-off and three keepalive-on runs alternated (off, on, off, on, off, on), then three more keepalive-off runs. The keepalive was `fabric-keepalive 0 small`, started 3 s before each "on" run and stopped after it. All nine runs passed. Medians, µs:
+
+| Run | Keepalive | Mac WRITE | Mac READ | GX10 WRITE | GX10 READ |
+|---|---|---:|---:|---:|---:|
+| A1 | off | 7.708 | 5.542 | 3.120 | 5.760 |
+| A2 | on | 7.542 | 5.667 | 3.040 | 5.664 |
+| A3 | off | 7.833 | 5.958 | 3.120 | 5.856 |
+| A4 | on | 7.708 | 5.875 | 3.120 | 5.536 |
+| A5 | off | 7.833 | 6.042 | 3.576 | 6.144 |
+| A6 | on | 7.708 | 5.958 | 3.120 | 5.744 |
+| A7 | off | 7.750 | 6.000 | 3.328 | 5.808 |
+| A8 | off | 7.791 | 6.021 | 3.312 | 5.808 |
+| A9 | off | 7.333 | 5.500 | 3.312 | 6.032 |
+
+On this MacBook the keepalive made no clear difference: its on-off gaps are smaller than the spread between off runs. That differs from the Studio result in [gpu-keepalive.md](gpu-keepalive.md). The comparison was not controlled: other applications were running during all nine runs (the busiest used 130 to 145% CPU, and WindowServer about 46%), and their GPU activity may already have kept the platform in the faster state. A quiet-machine A/B was not run.
+
+The Mac-initiated medians fell by about 2 µs between the 19:04 runs and these. The cause was not isolated; time since boot is the only recorded difference. For reference, the Studio's 100 Gb/s single runs in [gpu-keepalive.md](gpu-keepalive.md#100-gbs-link-runs) at the same MTU and payload were 7.21 to 7.29 µs WRITE and 5.92 µs READ from the Studio with keepalive on, and 9.88 / 7.12 µs with it off (driver 0.1.17).
 
 ## Sustained bandwidth
 
@@ -85,10 +105,10 @@ What a Mac-to-GB10 link delivered on our bench before MCDMA, next to the RDMA me
 | MCDMA RDMA, this MacBook, Helios 5S + CX-5 Ex (Mac READ / Mac WRITE, above) | 50.5 | 27.3 |
 | MCDMA RDMA, 17 Sep Studio report (Studio READ / Studio WRITE) | 50.5 | 29.4 |
 | TCP, this MacBook, same card, cable and GX10 port under Apple's Ethernet driver, `iperf3`, 1 / 4 streams (2) | 20.7 / 21.2 | 20.0 / 28.7 |
-| TCP, this MacBook over 10 GbE (QNAP QNA-T310G1T, Aquantia AQC107) to a GX10 (3) | about 9.4 | 9.36, 8.77 |
+| TCP, this MacBook over 10 GbE (QNAP QNA-T310G1T, Aquantia AQC107) to a GX10 (3) | not recorded | 9.36, 8.77 |
 
 (2) Measured 23 September 2026 at 18:25 UTC, before installing MCDMA, 10 s per run, MTU 1500 (Apple's driver caps this port at 2034). Earlier runs the same day on the other GX10 port gave 25.9 / 29.1 out and 19.0 / 13.3 in, so single TCP runs vary by several Gbit/s.
-(3) Measured 17 September 2026. The 9.4 is an `iperf3` result whose direction was not recorded; the two outbound figures are file copies, not `iperf3`.
+(3) Measured 17 September 2026. The outbound figures are file copies, not `iperf3`. A separate `iperf3` run gave about 9.4 Gbit/s, but its direction was not recorded, so it is not placed in either column.
 
 ## Not covered
 
