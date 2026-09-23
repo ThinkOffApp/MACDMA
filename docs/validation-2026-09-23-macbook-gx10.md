@@ -118,7 +118,7 @@ What a Mac-to-GB10 link delivered on our bench before MCDMA, next to the RDMA me
 
 | Path, Mac to GB10-class peer | Into the Mac, Gbit/s | Out of the Mac, Gbit/s |
 |---|---:|---:|
-| MCDMA RDMA, this MacBook, Helios 5S + CX-5 Ex (Mac READ / Mac WRITE, above) | 50.5 | 27.3 |
+| MCDMA RDMA, this MacBook, Helios 5S + CX-5 Ex (Mac READ / Mac WRITE, first 8 GiB sweep; outbound runs ranged 25.7 to 32.9) | 50.5 | 27.3 |
 | MCDMA RDMA, 17 Sep Studio report (Studio READ / Studio WRITE) | 50.5 | 29.4 |
 | TCP, this MacBook, same card, cable and GX10 port under Apple's Ethernet driver, `iperf3`, 1 / 4 streams (2) | 20.7 / 21.2 | 20.0 / 28.7 |
 | TCP, this MacBook over 10 GbE (QNAP QNA-T310G1T, Aquantia AQC107) to a GX10 (3) | not recorded | 9.36, 8.77 |
