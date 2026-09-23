@@ -128,7 +128,7 @@ On GB10-based peers, each QSFP port appears as two netdevs and two RDMA devices 
 
 Leave the peer port at its default autonegotiation and FEC settings. On the same GX10, a port that had earlier been forced with `ethtool -s "$PEER_IF" speed 100000 autoneg off` and `ethtool --set-fec "$PEER_IF" encoding rs` stayed down with a working cable; `ethtool -s "$PEER_IF" autoneg on` and `ethtool --set-fec "$PEER_IF" encoding auto` brought it up at 100000 Mb/s with RS-FEC active.
 
-If the port reports `Link detected: no (Cable issue, Unsupported cable)`, read the cable's identification with `sudo ethtool -m "$PEER_IF"` before suspecting the NIC. Two generic third-party 1 m QSFP28 DACs whose `Transceiver codes` were all `0x00`, with no extended 100GBASE-CR4 compliance code, never linked on the ConnectX-7 ports of two GX10s, with autonegotiation or forced to 100 Gb/s, and a CX5 port-to-port loopback under Apple's Ethernet driver stayed inactive with the same cable. An NVIDIA QSFP112 DAC, which fits the QSFP28 cage, linked the same CX5 and ConnectX-7 ports at 100GBASE-CR4 immediately. Prefer a DAC whose `ethtool -m` output names a 100GBASE-CR4 transceiver type, such as the MCP1600-C001E30N listed above.
+If the port reports `Link detected: no (Cable issue, Unsupported cable)`, read the cable's identification with `sudo ethtool -m "$PEER_IF"` before suspecting the NIC. Two generic third-party 1 m QSFP28 DACs whose `Transceiver codes` were all `0x00`, with no extended 100GBASE-CR4 compliance code, never linked on the ConnectX-7 ports of two GX10s, with autonegotiation or forced to 100 Gb/s, and a CX5 port-to-port loopback under Apple's Ethernet driver stayed inactive with the same cable. As a control, the NVIDIA DAC already used between the two GX10s linked the same CX5 and ConnectX-7 ports at 100GBASE-CR4 immediately; that is an observation about that one cable, not a recommended part. Use the MCP1600-C001E30N listed above, and check that `ethtool -m` names a 100GBASE-CR4 transceiver type for any other DAC.
 
 Clone this repository on the Spark too and check out the same commit as on the Mac before building the peer client. You can obtain that commit with `git rev-parse HEAD` in the Mac checkout.
 
@@ -139,7 +139,7 @@ mkdir -p build
 cc -std=c11 -O2 -Wall -Wextra -Werror peer/verbs_peer.c -libverbs -o build/verbs-peer
 ```
 
-Set `PEER_IF` to the selected physical port. If NetworkManager manages it, as on a default DGX OS or Ubuntu desktop install, it keeps retrying DHCP on this unaddressed link; on the GX10 above it was still "connecting (getting IP configuration)" after the link came up. Release the port before making the manual MTU, address and neighbor changes so that a NetworkManager reconnect cannot replace them:
+Set `PEER_IF` to the selected physical port. If NetworkManager manages it, as on a default DGX OS or Ubuntu desktop install, it keeps retrying DHCP on this unaddressed link; on the GX10 above it was still "connecting (getting IP configuration)" after the link came up. Release the port before making the manual MTU, address and neighbor changes so that a NetworkManager reconnect cannot replace them. This setting lasts only until the peer reboots ([NetworkManager: unmanaging devices](https://networkmanager.dev/docs/admins/#unmanaging-devices)), so repeat it after every peer reboot before restoring the MTU, address and neighbor:
 
 ```sh
 sudo nmcli dev set "$PEER_IF" managed no
@@ -185,7 +185,7 @@ sudo ip -6 neigh replace "$MAC_GID" lladdr "$MAC_HWADDR" nud permanent dev "$PEE
 ip -6 neigh show to "$MAC_GID" dev "$PEER_IF"
 ```
 
-This peer entry is also temporary and must be restored after a peer reboot. Both static neighbors are required because the Mac's address-only interface cannot answer ordinary neighbor discovery.
+This peer entry is also temporary and must be restored after a peer reboot, after releasing `$PEER_IF` from NetworkManager again as described above. Both static neighbors are required because the Mac's address-only interface cannot answer ordinary neighbor discovery.
 
 The driver configures and reads back its Ethernet MTU; a software-only `ifconfig mtu` change is rejected. Inspect the actual Mac MTU and use the matching RC path MTU. The native address interface does not send ordinary NDP packets, which is why the static neighbor is explicit.
 
