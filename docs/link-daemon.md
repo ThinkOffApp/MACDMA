@@ -51,6 +51,13 @@ connects to, as above, and let only the Mac through the firewall. A control conn
 handshake within ten seconds is dropped, and TCP keepalive clears a connection left by a Mac that crashed or
 restarted, so a stray connection cannot lock the real Mac out.
 
+## Metal buffers on macOS
+
+On macOS, `libmcdma-rpc` also offers `mcdma_rpc_metal_wrap`, `mcdma_rpc_metal_contents` and `mcdma_rpc_metal_release`.
+They make a Metal buffer over mailbox memory without a copy, so a GPU reads what the NIC wrote: oMLX imports the reply
+half into MLX through DLPack and copies large frames into its own buffers on the GPU. The buffer is refused unless it is
+the caller's memory. Helpers built before these functions simply lack them, and callers fall back to a CPU copy.
+
 ## Status and shutdown
 
 ```bash

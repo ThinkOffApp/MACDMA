@@ -27,6 +27,21 @@ uint64_t mcdma_rpc_wait_word(const volatile uint64_t *word, uint32_t seq, int wa
 /* Store `value` so that every earlier store to the mailbox is visible first. */
 void mcdma_rpc_store_word(volatile uint64_t *word, uint64_t value);
 
+#if defined(__APPLE__)
+#include <stddef.h>
+
+/* A Metal buffer over `length` bytes at `memory` without a copy, for a GPU to read mailbox memory
+ * directly; NULL unless it aliases `memory`. Pass page-aligned memory, as Metal documents.
+ * Optional: older helpers lack these three functions. */
+void *mcdma_rpc_metal_wrap(void *memory, size_t length);
+
+/* The buffer's CPU address, which equals `memory` for a buffer from mcdma_rpc_metal_wrap. */
+void *mcdma_rpc_metal_contents(void *buffer);
+
+/* Release a buffer from mcdma_rpc_metal_wrap; the memory itself stays mapped. */
+void mcdma_rpc_metal_release(void *buffer);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,12 +1,20 @@
 /* Offline test of libmcdma-rpc: waits see stores made by another thread, match
  * the requested sequence rule and time out without a device. */
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+/* MAP_ANON for the Metal check. */
+#define _DARWIN_C_SOURCE
+#endif
 #include "../rpc/mcdma_rpc.h"
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#if defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #define WORD(seq, len) (((uint64_t)(uint32_t)(seq) << 32) | (uint32_t)(len))
 
@@ -61,6 +69,19 @@ int main(void) {
             check(g_payload[i] == (unsigned char)(seq + i), "the payload is visible before its word");
         pthread_join(thread, NULL);
     }
+#if defined(__APPLE__)
+    /* A Metal buffer over page-aligned memory aliases it; nothing to wrap gives NULL. */
+    size_t page = (size_t)sysconf(_SC_PAGESIZE), length = 4 * page;
+    unsigned char *memory = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
+    check(memory != MAP_FAILED, "mmap");
+    void *buffer = mcdma_rpc_metal_wrap(memory, length);
+    check(buffer != NULL, "Metal wraps page-aligned memory");
+    check(mcdma_rpc_metal_contents(buffer) == memory, "the Metal buffer aliases the memory");
+    mcdma_rpc_metal_release(buffer);
+    check(mcdma_rpc_metal_wrap(NULL, page) == NULL, "no memory, no buffer");
+    check(mcdma_rpc_metal_wrap(memory, 0) == NULL, "no length, no buffer");
+    munmap(memory, length);
+#endif
     puts("test_rpc_helper: ok");
     return 0;
 }

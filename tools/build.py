@@ -66,7 +66,8 @@ if len(sys.argv)>1 and sys.argv[1]=='test':
     run([BUILD/'test-user-provider'])
     # Link daemon: its helper library under threads, and the daemon itself compiled against librdma.
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
-         'tests/test_rpc_helper.c','rpc/libmcdma_rpc.c','-o',BUILD/'test-rpc-helper'])
+         'tests/test_rpc_helper.c','rpc/libmcdma_rpc.c','rpc/libmcdma_rpc_metal.m','-fobjc-arc',
+         '-framework','Metal','-framework','Foundation','-o',BUILD/'test-rpc-helper'])
     run([BUILD/'test-rpc-helper'])
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
          'tests/test_rpcd_socket.c','rpc/rpcd_common.c','-o',BUILD/'test-rpcd-socket'])
@@ -111,7 +112,8 @@ if len(sys.argv)>1 and sys.argv[1]=='native':
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
          *RPCD_SOURCES,'-lrdma','-o',BUILD/'mcdma-rpcd'])
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,'-dynamiclib',
-         '-install_name','/usr/local/lib/libmcdma-rpc.dylib','rpc/libmcdma_rpc.c','-o',BUILD/'libmcdma-rpc.dylib'])
+         '-install_name','/usr/local/lib/libmcdma-rpc.dylib','rpc/libmcdma_rpc.c','rpc/libmcdma_rpc_metal.m',
+         '-fobjc-arc','-framework','Metal','-framework','Foundation','-o',BUILD/'libmcdma-rpc.dylib'])
     # GPU keep-alive: holds the platform out of its idle power state during
     # latency-critical RDMA (see docs/gpu-keepalive.md).
     run(['xcrun','swiftc','-O','-sdk',ms,'client/fabric_keepalive.swift','-o',BUILD/'fabric-keepalive'])

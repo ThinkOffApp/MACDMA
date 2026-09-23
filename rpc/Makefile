@@ -10,6 +10,8 @@ ifeq ($(UNAME),Darwin)
 VERBS := -lrdma
 HELPER := libmcdma-rpc.dylib
 SHARED := -dynamiclib -install_name $(PREFIX)/lib/$(HELPER)
+# Metal buffers over mailbox memory, for GPUs that read what the NIC wrote.
+HELPER_EXTRA := libmcdma_rpc_metal.m -fobjc-arc -framework Metal -framework Foundation
 else
 # shm_open lives in librt before glibc 2.34
 VERBS := -libverbs -lrt
@@ -28,10 +30,10 @@ $(OUT)/mcdma-rpcd: $(DAEMON) rpcd.h | $(OUT)
 	$(CC) $(CFLAGS) -o $@ $(DAEMON) $(VERBS) -lpthread
 
 $(OUT)/$(HELPER): libmcdma_rpc.c mcdma_rpc.h | $(OUT)
-	$(CC) $(CFLAGS) $(SHARED) -o $@ libmcdma_rpc.c
+	$(CC) $(CFLAGS) $(SHARED) -o $@ libmcdma_rpc.c $(HELPER_EXTRA)
 
 test: ../tests/test_rpc_helper.c ../tests/test_rpcd_socket.c libmcdma_rpc.c mcdma_rpc.h rpcd_common.c rpcd.h | $(OUT)
-	$(CC) $(CFLAGS) -o $(OUT)/test-rpc-helper ../tests/test_rpc_helper.c libmcdma_rpc.c -lpthread
+	$(CC) $(CFLAGS) -o $(OUT)/test-rpc-helper ../tests/test_rpc_helper.c libmcdma_rpc.c $(HELPER_EXTRA) -lpthread
 	$(OUT)/test-rpc-helper
 	$(CC) $(CFLAGS) -o $(OUT)/test-rpcd-socket ../tests/test_rpcd_socket.c rpcd_common.c
 	$(OUT)/test-rpcd-socket
