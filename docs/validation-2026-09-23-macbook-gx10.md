@@ -46,18 +46,20 @@ Each "verified" is 4096 bytes checked by the runner. No arm fell back to a diffe
 
 The README command, BlueFlame-64, RC path MTU 1024, 1000 timed operations per verb, **Metal keepalive off**. Each configuration ran twice with fresh output files. These are completion times for one operation at queue depth one, not one-way wire latency.
 
-| Payload | Operation | Run 1 median / p99, µs | Run 2 median / p99, µs |
-|---|---|---|---|
-| 4 KiB | Mac WRITE | 9.96 / 19.75 | 9.83 / 16.96 |
-| 4 KiB | Mac READ | 8.02 / 11.17 | 7.75 / 11.50 |
-| 4 KiB | GX10 WRITE | 3.17 / 3.33 | 3.12 / 4.10 |
-| 4 KiB | GX10 READ | 6.54 / 7.09 | 6.62 / 7.09 |
-| 1 KiB | Mac WRITE | 8.88 / 14.08 | 8.50 / 15.08 |
-| 1 KiB | Mac READ | 6.42 / 11.38 | 6.50 / 11.42 |
-| 1 KiB | GX10 WRITE | 2.46 / 2.83 | 2.66 / 3.30 |
-| 1 KiB | GX10 READ | 5.60 / 6.32 | 6.13 / 7.15 |
+| Payload | Operation | Run 1 median / p99, µs | Run 2 median / p99, µs | README Studio median, µs (1) |
+|---|---|---|---|---:|
+| 4 KiB | Mac WRITE | 9.96 / 19.75 | 9.83 / 16.96 | 7.625 |
+| 4 KiB | Mac READ | 8.02 / 11.17 | 7.75 / 11.50 | 6.042 |
+| 4 KiB | GX10 WRITE | 3.17 / 3.33 | 3.12 / 4.10 | 3.680 (Spark) |
+| 4 KiB | GX10 READ | 6.54 / 7.09 | 6.62 / 7.09 | 5.536 (Spark) |
+| 1 KiB | Mac WRITE | 8.88 / 14.08 | 8.50 / 15.08 | not published |
+| 1 KiB | Mac READ | 6.42 / 11.38 | 6.50 / 11.42 | not published |
+| 1 KiB | GX10 WRITE | 2.46 / 2.83 | 2.66 / 3.30 | not published |
+| 1 KiB | GX10 READ | 5.60 / 6.32 | 6.13 / 7.15 | not published |
 
-All 8,000 Mac samples and 8,000 GX10 samples (4 runs x 2 verbs x 1000) completed. The README's historical table (Mac Studio, 0.1.17, keepalive on) is not directly comparable: the Mac, the driver version and the keepalive state all differ. Keepalive-on runs on this MacBook were not taken.
+(1) Copied from the README headline table, not re-measured: Mac Studio M3 Ultra and one DGX Spark, lab driver 0.1.17, continuous Metal keepalive on, 40 Gb/s link, pooled over three runs. Our runs differ in the Mac, the driver version (0.1.18), the keepalive (off) and the link rate (100 Gb/s), so the column is context, not a matched comparison.
+
+All 8,000 Mac samples and 8,000 GX10 samples (4 runs x 2 verbs x 1000) completed. Keepalive-on runs on this MacBook were not taken, so the effect of the keepalive here is unknown.
 
 ## Sustained bandwidth
 
@@ -74,9 +76,19 @@ The right-hand column is copied from the 17 September report for reference; it w
 
 The directional shape of the 17 September Studio runs appears on this MacBook as well: about 50.5 Gbit/s into the Mac and 26 to 28 Gbit/s out of it. That points away from the Studio specifically. It does not identify the cause.
 
-## For comparison: TCP on the same link, before installation
+## In context: the same direction over TCP
 
-Earlier the same day, the same card, enclosure, cable and GX10 port ran `iperf3` under Apple's built-in Ethernet driver (MTU 1500, its maximum there is 2034): 20.7 / 21.2 Gbit/s GX10 to MacBook and 20.0 / 28.7 Gbit/s MacBook to GX10, with 1 / 4 TCP streams, 10 s each. These are TCP results from a different driver and MTU, listed only as a baseline; they are not MCDMA measurements.
+What a Mac-to-GB10 link delivered on our bench before MCDMA, next to the RDMA medians above. The TCP rows use a different driver, protocol and MTU; they show what MCDMA replaced for us, and are not MCDMA measurements or a like-for-like comparison.
+
+| Path, Mac to GB10-class peer | Into the Mac, Gbit/s | Out of the Mac, Gbit/s |
+|---|---:|---:|
+| MCDMA RDMA, this MacBook, Helios 5S + CX-5 Ex (Mac READ / Mac WRITE, above) | 50.5 | 27.3 |
+| MCDMA RDMA, 17 Sep Studio report (Studio READ / Studio WRITE) | 50.5 | 29.4 |
+| TCP, this MacBook, same card, cable and GX10 port under Apple's Ethernet driver, `iperf3`, 1 / 4 streams (2) | 20.7 / 21.2 | 20.0 / 28.7 |
+| TCP, this MacBook over 10 GbE (QNAP QNA-T310G1T, Aquantia AQC107) to a GX10 (3) | about 9.4 | 9.36, 8.77 |
+
+(2) Measured 23 September 2026 at 18:25 UTC, before installing MCDMA, 10 s per run, MTU 1500 (Apple's driver caps this port at 2034). Earlier runs the same day on the other GX10 port gave 25.9 / 29.1 out and 19.0 / 13.3 in, so single TCP runs vary by several Gbit/s.
+(3) Measured 17 September 2026. The 9.4 is an `iperf3` result whose direction was not recorded; the two outbound figures are file copies, not `iperf3`.
 
 ## Not covered
 
