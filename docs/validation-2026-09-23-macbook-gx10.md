@@ -1,6 +1,6 @@
 # 0.1.18 on a MacBook Pro and an ASUS GX10, 23 September 2026
 
-Contributed report, not a maintainer measurement. It repeats the correctness checks from the [installation guide](install.md#5-verify-rdma-before-using-it), the README latency command, and the bandwidth recipe from the [17 September report](validation-2026-09-17.md#reproducing-the-bandwidth-shape) on a different Mac and a different GB10 peer. Everything below was measured on one link, on one boot of each machine, on 23 September 2026 between 19:03 and 19:07 UTC.
+Contributed report, not a maintainer measurement. It repeats the correctness checks from the [installation guide](install.md#5-verify-rdma-before-using-it), the README latency command, and the bandwidth recipe from the [17 September report](validation-2026-09-17.md#reproducing-the-bandwidth-shape) on a different Mac and a different GB10 peer. Everything below was measured on one link, on one boot of each machine, on 23 September 2026 between 19:03 and 19:24 UTC. The Mac booted at 18:59:06 UTC.
 
 ## Test setup
 
@@ -9,16 +9,16 @@ Contributed report, not a maintainer measurement. It repeats the correctness che
 | Machine | MacBook Pro, Apple M5 Max, 128 GB (`Mac17,6`) | ASUS Ascent GX10 (GB10) |
 | OS | macOS 27.0 build `26A428`, SIP disabled, Reduced Security, `rdma_ctl` enabled | Ubuntu 24.04.5 LTS, kernel `7.0.0-1019-nvidia` |
 | NIC | ConnectX-5 Ex `15b3:1019` in an OWC Mercury Helios 5S | ConnectX-7 (`vendor_part_id` 4129), firmware `28.45.4028` |
-| Host path | PCIe Gen4 x4, 16 GT/s; the card reports max payload 128 bytes, max read request 512 bytes | |
+| Host path | PCIe Gen4 x4, 16 GT/s (System Information); the driver's `MCDMAPCIePath` readout in `ioreg` shows max payload 128 bytes and max read request 512 bytes at the card | |
 | Interface | `mcrdma3` / `rdma_mcrdma3` | `enp1s0f1np1` / `rocep1s0f1`, GID index 1 (RoCE v2) |
 
 Physical link: one NVIDIA QSFP112 DAC, negotiated 100GBASE-CR4 with RS-FEC on both ends. Ethernet MTU 9000 on both ends. On the peer, NetworkManager was told to stop managing the port before the MTU, address and neighbor steps, because its DHCP retries otherwise undo them. No switch.
 
-A second card was attached to the Mac during these runs: a ConnectX-4 Lx `15b3:1015` dual-port adapter on a separate Thunderbolt port. The driver also bound it (`mcrdma0`, `mcrdma1`). It had no cable and carried no traffic. The checker reported four native devices, one active port and no errors.
+A second card was attached to the Mac during these runs: a ConnectX-4 Lx `15b3:1015` dual-port adapter on a separate Thunderbolt port. The driver also bound it (`mcrdma0`, `mcrdma1`). It had no cable and carried no traffic. The checker listed seven RDMA devices: three of Apple's own and four native ConnectX ports (two per card; `mcrdma2` is the uncabled second CX-5 port). It reported `native_cx5=4`, one active port and no errors.
 
 ## Build identity
 
-Source: this repository at `7192192`, built on the Mac with Xcode 27.0 (`27A266a`) and the macOS 27.0 SDK. The binaries were built from a branch that differs from `7192192` only in `docs/install.md` and `rpc/rpcd_connect.c` ([PR #5](https://github.com/ashhart/MCDMA/pull/5)), which the driver, provider and benchmark clients do not use.
+Source: this repository at `7192192`, built on the Mac at 17:36 UTC with Xcode 27.0 (`27A266a`) and the macOS 27.0 SDK. The peer binaries were built from the same commit with GCC 13.3.0.
 
 | Item | Identity |
 |---|---|
@@ -59,11 +59,11 @@ The README command, BlueFlame-64, RC path MTU 1024, 1000 timed operations per ve
 
 (1) Copied from the README headline table, not re-measured: Mac Studio M3 Ultra and one DGX Spark, lab driver 0.1.17, continuous Metal keepalive on, 40 Gb/s link, pooled over three runs. Our runs differ in the Mac, the driver version (0.1.18), the keepalive (off) and the link rate (100 Gb/s), so the column is context, not a matched comparison.
 
-All 8,000 Mac samples and 8,000 GX10 samples (4 runs x 2 verbs x 1000) completed. These four runs started six to seven minutes after the Mac booted. Later runs on the same boot were faster; see the next section.
+All 8,000 Mac samples and 8,000 GX10 samples (4 runs x 2 verbs x 1000) completed. These four runs started five to six minutes after the Mac booted. Later runs on the same boot were faster; see the next section.
 
 ### Later runs and a keepalive A/B
 
-From 19:18 UTC, 20 to 22 minutes after boot, the same 4 KiB / MTU 1024 / BlueFlame-64 command ran nine more times: three keepalive-off and three keepalive-on runs alternated (off, on, off, on, off, on), then three more keepalive-off runs. The keepalive was `fabric-keepalive 0 small`, started 3 s before each "on" run and stopped after it. All nine runs passed. Medians, µs:
+From 19:18 UTC, 19 to 21 minutes after boot, the same 4 KiB / MTU 1024 / BlueFlame-64 command ran nine more times: three keepalive-off and three keepalive-on runs alternated (off, on, off, on, off, on), then three more keepalive-off runs. The keepalive was `fabric-keepalive 0 small`, started 3 s before each "on" run and stopped after it. All nine runs passed. Medians, µs:
 
 | Run | Keepalive | Mac WRITE | Mac READ | GX10 WRITE | GX10 READ |
 |---|---|---:|---:|---:|---:|
@@ -128,4 +128,4 @@ What a Mac-to-GB10 link delivered on our bench before MCDMA, next to the RDMA me
 
 ## Not covered
 
-One link only; the second CX-5 port was not cabled. No concurrent-port runs, no process-termination matrix, no keepalive-on runs, no GPU-buffer paths, no inference workload, and no long soak. The MacBook was on AC power, battery full, default power mode (checked with `pmset` after the runs, not controlled during them). Raw CSVs, manifests and logs are kept outside this repository because they contain addresses and memory-region keys.
+One link only; the second CX-5 port was not cabled. No concurrent-port runs, no process-termination matrix, no keepalive A/B on an otherwise idle machine, no GPU-buffer paths, no inference workload, and no long soak. The MacBook was on AC power, battery full, default power mode (checked with `pmset` after the runs, not controlled during them). Raw CSVs, manifests and logs are kept outside this repository because they contain addresses and memory-region keys.
