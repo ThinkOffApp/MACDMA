@@ -96,6 +96,22 @@ The right-hand column is copied from the 17 September report for reference; it w
 
 The directional shape of the 17 September Studio runs appears on this MacBook as well: about 50.5 Gbit/s into the Mac and 26 to 28 Gbit/s out of it. That points away from the Studio specifically. It does not identify the cause.
 
+### Repeat sweep and longer runs
+
+The same 8 GiB sweep, repeated at 19:22 UTC with a fresh output directory, gave medians of 50.5 (Mac READ), 51.0 (GX10 WRITE), 26.5 (Mac WRITE) and 26.1 (GX10 READ) Gbit/s. All 12 trials passed with the same checks.
+
+Longer single transfers followed the 17 September follow-up: one 4 MiB slot, depth one, kernel posting, no warmup, one run per configuration unless listed twice.
+
+| Payload direction | Initiator and operation | Total payload | Duration | Gbit/s | 17 Sep Studio, Gbit/s |
+|---|---|---:|---:|---:|---:|
+| GX10 to MacBook | Mac READ | 96 GiB | 16.314 s | 50.5 | 50.6 |
+| MacBook to GX10 | Mac WRITE, run 1 | 64 GiB | 16.743 s | 32.8 | 29.4 |
+| MacBook to GX10 | Mac WRITE, run 2 | 64 GiB | 20.110 s | 27.3 | |
+| MacBook to GX10 | GX10 READ, run 1 | 64 GiB | 16.685 s | 32.9 | 24.6 |
+| MacBook to GX10 | GX10 READ, run 2 | 64 GiB | 21.416 s | 25.7 | |
+
+All passed with no completion errors, no sampled-byte mismatches, intact guards and confirmed modes. Into the Mac, every run landed at 50.5 to 51.0 Gbit/s. Out of the Mac, results ranged from 25.7 to 32.9 Gbit/s between runs of the same configuration a few minutes apart. The two 32.8 / 32.9 results were not reproduced by the repeats, so they show the spread, not a new outbound rate.
+
 ## In context: the same direction over TCP
 
 What a Mac-to-GB10 link delivered on our bench before MCDMA, next to the RDMA medians above. The TCP rows use a different driver, protocol and MTU; they show what MCDMA replaced for us, and are not MCDMA measurements or a like-for-like comparison.
