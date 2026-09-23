@@ -43,7 +43,7 @@ Separate functional tests have verified RDMA WRITE and READ in both initiation d
 
 Installing MCDMA alone does not connect an inference engine to this path. Direct registration of an existing `cudaMalloc` allocation still fails on the tested Spark, and direct access to Metal private buffers remains unverified; the verified approach is to create the transferred tensors in compatible shared allocations from the outset.
 
-**I plan to submit a pull request to oMLX to integrate MCDMA**, starting with the allocation and transfer support needed for this shared GPU-accessible memory path. That integration has not yet been submitted.
+**I have submitted a pull request to oMLX that uses MCDMA:** [jundot/omlx#3869](https://github.com/jundot/omlx/pull/3869). In a Mac and CUDA ring deployment it carries the pipeline hand-off from a CUDA worker to the Mac through the link daemon described below, once oMLX has proven the link live; otherwise the launch uses oMLX's TCP ring as before. The pull request is awaiting review and has not yet run on ConnectX hardware. It does not include the allocation support for the shared GPU-accessible memory path described above, which is still to come.
 
 The [link daemon](docs/link-daemon.md) is the transport for that kind of integration: applications on the Mac and on a Linux peer exchange requests and replies through shared-memory mailboxes, while only `mcdma-rpcd` holds queue pairs. It is compiled and offline-tested but has not yet run on hardware in this form.
 
