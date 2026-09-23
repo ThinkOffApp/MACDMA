@@ -47,6 +47,8 @@ Installing MCDMA alone does not connect an inference engine to this path. Direct
 
 The [link daemon](docs/link-daemon.md) is the transport for that kind of integration: applications on the Mac and on a Linux peer exchange requests and replies through shared-memory mailboxes, while only `mcdma-rpcd` holds queue pairs. It is compiled and offline-tested but has not yet run on hardware in this form.
 
+[KV handoff](docs/kv-handoff.md) builds on it: a vLLM connector exports a finished prefill's KV cache over a link, so a decoder on the Mac can pull it instead of prefilling the prompt itself. It is offline-tested, not yet run on hardware.
+
 A first end-to-end hand-off has run: **Qwen3-4B in MXFP4** was prefilled by vLLM on the Spark, its KV cache was pulled over RDMA, and the reply was decoded by MLX on the Studio. The split reply was the fastest of the three arrangements at every tested prompt length up to 15,402 tokens, and the first token matched a fully local MLX run at every tested length, with longer greedy outputs agreeing to different lengths. The [disaggregated inference note](docs/disaggregated-inference.md) has the full table and every limitation; it used scripts outside this repository and file-staged first-version plumbing. During that run the link carried a 4,057 MiB cache at 38 Gbit/s, which is a workload observation, not a bandwidth benchmark.
 
 ## Get started
