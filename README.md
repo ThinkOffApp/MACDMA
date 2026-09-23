@@ -43,7 +43,9 @@ Separate functional tests have verified RDMA WRITE and READ in both initiation d
 
 Installing MCDMA alone does not connect an inference engine to this path. Direct registration of an existing `cudaMalloc` allocation still fails on the tested Spark, and direct access to Metal private buffers remains unverified; the verified approach is to create the transferred tensors in compatible shared allocations from the outset.
 
-**I plan to submit a pull request to oMLX to integrate MCDMA**, starting with the allocation and transfer support needed for this shared GPU-accessible memory path. That integration is planned and has not yet been implemented or submitted.
+**I plan to submit a pull request to oMLX to integrate MCDMA**, starting with the allocation and transfer support needed for this shared GPU-accessible memory path. That integration has not yet been submitted.
+
+The [link daemon](docs/link-daemon.md) is the transport for that kind of integration: applications on the Mac and on a Linux peer exchange requests and replies through shared-memory mailboxes, while only `mcdma-rpcd` holds queue pairs. It is compiled and offline-tested but has not yet run on hardware in this form.
 
 A first end-to-end hand-off has run: **Qwen3-4B in MXFP4** was prefilled by vLLM on the Spark, its KV cache was pulled over RDMA, and the reply was decoded by MLX on the Studio. The split reply was the fastest of the three arrangements at every tested prompt length up to 15,402 tokens, and the first token matched a fully local MLX run at every tested length, with longer greedy outputs agreeing to different lengths. The [disaggregated inference note](docs/disaggregated-inference.md) has the full table and every limitation; it used scripts outside this repository and file-staged first-version plumbing. During that run the link carried a 4,057 MiB cache at 38 Gbit/s, which is a workload observation, not a bandwidth benchmark.
 

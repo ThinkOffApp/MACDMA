@@ -11,6 +11,7 @@ parser.add_argument('mode',choices=['test','native'])
 args=parser.parse_args()
 BUILD=ROOT/'build'
 BUILD.mkdir(exist_ok=True)
+RPCD_SOURCES=['rpc/mcdma-rpcd.c','rpc/rpcd_common.c','rpc/rpcd_verbs.c','rpc/rpcd_listen.c','rpc/rpcd_connect.c']
 def run(args):
     subprocess.run([str(x) for x in args],check=True,cwd=ROOT)
 def sdk(name):
@@ -63,6 +64,16 @@ if len(sys.argv)>1 and sys.argv[1]=='test':
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
          'tests/test_user_provider.c','-lrdma','-o',BUILD/'test-user-provider'])
     run([BUILD/'test-user-provider'])
+    # Link daemon: its helper library under threads, and the daemon itself compiled against librdma.
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
+         'tests/test_rpc_helper.c','rpc/libmcdma_rpc.c','-o',BUILD/'test-rpc-helper'])
+    run([BUILD/'test-rpc-helper'])
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
+         'tests/test_rpcd_socket.c','rpc/rpcd_common.c','-o',BUILD/'test-rpcd-socket'])
+    run([BUILD/'test-rpcd-socket'])
+    run([sys.executable,'-B','tests/test_rpcd_daemon.py'])
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror',*RPCD_SOURCES,'-lrdma','-o',BUILD/'mcdma-rpcd'])
+    run([BUILD/'mcdma-rpcd','version'])
     run([sys.executable,'tests/test_native_observer_marker.py'])
     run([sys.executable,'tests/test_native_endpoint.py'])
     run([sys.executable,'-B','tests/test_restore_rdma.py'])
@@ -95,6 +106,11 @@ if len(sys.argv)>1 and sys.argv[1]=='native':
          'benchmarks/mcdma_bw.c','-lrdma','-o',BUILD/'mcdma-bw'])
     run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
          'client/mcdma_set.c','-framework','IOKit','-framework','CoreFoundation','-o',BUILD/'mcdma-set'])
+    # Link daemon and helper library for applications (docs/link-daemon.md); the same sources build on Linux.
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,
+         *RPCD_SOURCES,'-lrdma','-o',BUILD/'mcdma-rpcd'])
+    run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-isysroot',ms,'-dynamiclib',
+         '-install_name','/usr/local/lib/libmcdma-rpc.dylib','rpc/libmcdma_rpc.c','-o',BUILD/'libmcdma-rpc.dylib'])
     # GPU keep-alive: holds the platform out of its idle power state during
     # latency-critical RDMA (see docs/gpu-keepalive.md).
     run(['xcrun','swiftc','-O','-sdk',ms,'client/fabric_keepalive.swift','-o',BUILD/'fabric-keepalive'])
