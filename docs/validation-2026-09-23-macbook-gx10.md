@@ -158,7 +158,7 @@ What this shows, for this model and these three runs per point:
 
 - The split kept the Mac's decode rate, about 2.7 times this GX10 baseline, and moved prefill to the GX10. At 28,270 tokens its 128-token reply took 21% less time than Mac-only, and at 15,141 tokens 12% less. At 3,830 and 7,600 tokens the configurations were within a few percent of each other.
 - The 1,035-token Mac-only first token (1.55 s, longer than at 3,830 tokens) appeared in two of three Mac-only requests and was not investigated, so the split's apparent lead at that length is not claimed.
-- The M5 Max prefilled 28,270 tokens in about 10.9 s. The [disaggregated-inference report](disaggregated-inference.md) gives 22.32 s for 28,852 tokens on the M3 Ultra Studio, with an MXFP4 checkpoint and summed stage times. The quantisation and the method differ, so this is context, not a matched comparison; it is why the split gains less on this Mac than in that note.
+- The M5 Max prefilled 28,270 tokens in about 10.9 s. The [disaggregated-inference report](disaggregated-inference.md) gives 22.32 s for 28,852 tokens on the M3 Ultra Studio, with an MXFP4 checkpoint and summed stage times. The quantisation and the method differ, so this is context, not a matched comparison; it is why the split gains less on this Mac than in that report.
 - The GX10 decode figures are BF16 in an untuned vLLM configuration and should not be read as the GB10's best decode rate.
 
 ### Tuning the split, 24 September
