@@ -143,7 +143,7 @@ bool Transport::execute(const uint8_t *in,size_t in_bytes,uint8_t *out,size_t ou
                 const uint32_t admin=cx5::read_be32(in+16+24);
                 assert(admin && !(admin&~sim.ptys_capability));
                 ++sim.ptys_writes;
-                if (sim.fail_ptys_write) { sim.fail_ptys_write=false; last.completed=1; last.firmware_status=2; return false; }
+                if (sim.ptys_writes==sim.fail_ptys_at) { last.completed=1; last.firmware_status=2; return false; }
                 sim.ptys_admin=admin; sim.ptys_an_disabled=(in[16]>>6)&1;
             } else assert(cx5::read_be32(in+4)==1);
             out[16]=uint8_t((sim.ptys_an_disabled?0x40:0)|(sim.ptys_an_disable_cap?0x20:0));

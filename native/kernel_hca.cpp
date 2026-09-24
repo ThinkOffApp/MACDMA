@@ -200,8 +200,11 @@ Hca::SpeedResult Hca::set_port_speed(uint32_t admin, bool autoneg_disable) {
         (write_port_admin(1) || write_port_admin(1))) return SpeedResult::applied;
     // A failed write may or may not have taken effect, so restore both the
     // previous advertisement and the up state rather than guess which step ran.
-    return write_port_speed(before.admin,before.autoneg_disabled) && write_port_admin(1)
-        ? SpeedResult::failed_restored : SpeedResult::recovery_required;
+    // Both are attempted even if the first fails: a port left up on the new
+    // setting is better than one left down.
+    const bool restored=write_port_speed(before.admin,before.autoneg_disabled);
+    const bool up=write_port_admin(1);
+    return restored && up ? SpeedResult::failed_restored : SpeedResult::recovery_required;
 }
 bool Hca::query_mtu(MtuState &state) {
     header(0x805,1); cx5::write_be32(input_+8,0x5003); input_[17]=1;

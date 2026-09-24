@@ -208,7 +208,7 @@ void port_speed() {
     // From here the setting before each request is 25G forced.
     const uint32_t old_admin=1u<<27, wanted=(1u<<12)|(1u<<27);
     // A refused PTYS write: the old advertisement is written back, port stays up.
-    sim.paos_writes.clear(); sim.fail_ptys_write=true;
+    sim.paos_writes.clear(); sim.fail_ptys_at=sim.ptys_writes+1;
     assert(hca.set_port_speed(wanted,false)==R::failed_restored);
     assert(sim.ptys_admin==old_admin && sim.ptys_an_disabled && sim.port_admin==1);
     // A refused port-down: restored, and the port is explicitly brought up.
@@ -225,6 +225,12 @@ void port_speed() {
     sim.paos_writes.clear(); sim.fail_paos_up=2;
     assert(hca.set_port_speed(old_admin,true)==R::failed_restored);
     assert(sim.ptys_admin==wanted && !sim.ptys_an_disabled && sim.port_admin==1);
+    assert((sim.paos_writes==std::vector<uint8_t>{2,1,1,1}));
+    // Both ups refused and the write-back refused too: the final up is still
+    // attempted, so the port ends up on the new setting rather than down.
+    sim.paos_writes.clear(); sim.fail_paos_up=2; sim.fail_ptys_at=sim.ptys_writes+2;
+    assert(hca.set_port_speed(old_admin,true)==R::recovery_required);
+    assert(sim.port_admin==1 && sim.ptys_admin==old_admin && sim.ptys_an_disabled);
     assert((sim.paos_writes==std::vector<uint8_t>{2,1,1,1}));
     // Every port-up refused: the port is left down and the caller is told so.
     sim.paos_writes.clear(); sim.fail_paos_up=3;
