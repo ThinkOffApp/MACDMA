@@ -174,6 +174,20 @@ On 24 September between 02:27 and 02:37 UTC the split was rerun at 15,137 and 28
 
 With larger prefill chunks the split's reply took 24% less time than the Mac-only 13.90 s. At 15,137 tokens it was 5.88 s against 6.84 s. Turning checksums off shortened the transfer but not the first token in these three runs. Online FP8 weights roughly doubled vLLM's own decode rate (25.0 to 43.9 tok/s over the five lengths) but made the 28k prefill slower, so the split lost time; FP8 accuracy was not evaluated beyond the passphrase check. The remaining transfer, about 1.1 s at 28k, is the part that streaming layers during prefill would hide. That was not attempted.
 
+### Next to the Studio note
+
+The [disaggregated-inference note](disaggregated-inference.md) reports the same kind of split on an M3 Ultra Studio and a DGX Spark. Its numbers are copied below, not re-measured. The setups differ in several ways: its checkpoint was MXFP4 where ours was BF16, its driver was 0.1.17, and its reply times are sums of separately measured stages where ours are end-to-end client times. Its prompt lengths also differ from ours by 2 to 5%. Times are 128-token replies with the first token in brackets; the percentage is how much less time the split took than Mac-only.
+
+| Prompt, ours / note | Ours: Mac-only, s | Ours: split, s | Ours: less time | Note: Studio-only, s | Note: split, s | Note: less time |
+|---|---:|---:|---:|---:|---:|---:|
+| 1,035 / 977 | 3.73 (1.55) | 2.44 (0.31) | not claimed (see above) | 1.19 (0.39) | 1.05 (0.20) | 12% (49%) |
+| 3,830 / 3,852 | 2.95 (0.74) | 3.06 (0.88) | -4% (-19%) | 2.50 (1.63) | 1.84 (0.76) | 26% (53%) |
+| 7,600 / 7,702 | 3.95 (1.65) | 3.96 (1.68) | 0% (-2%) | 4.62 (3.62) | 2.97 (1.56) | 36% (57%) |
+| 15,141 / 15,402 | 6.84 (4.32) | 5.88 (3.36) | 14% (22%) | 10.03 (8.81) | 5.55 (3.52) | 45% (60%) |
+| 28,270 / 28,852 | 13.90 (10.92) | 10.54 (7.49) | 24% (31%) | 23.94 (22.32) | 11.21 (8.08) | 53% (64%) |
+
+The two lower rows of our split use the 16k prefill chunks from the tuning runs; the others use vLLM's default. In absolute time the two splits were close: 10.54 s and 11.21 s at the longest prompt. The percentages differ mainly because of the Mac-only baseline. The M5 Max prefilled about twice as fast as the note's M3 Ultra, which leaves the remote prefill less to save.
+
 ### The producer checksum limited the handoff
 
 With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is in [#5](https://github.com/ashhart/MCDMA/pull/5).
