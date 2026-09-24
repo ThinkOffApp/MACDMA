@@ -216,7 +216,7 @@ At the same quantisation the M5 Max decoded within about 8% of the M3 Ultra at e
 
 1. The producer's CRC-32 uses python-isal instead of zlib (#5): checked transfers went from 16 to 19 Gbit/s to 26 to 30.
 2. vLLM `--max-num-batched-tokens 16384`: the GX10's 28k prefill went from about 6.4 s to 6.0 s.
-3. The MXFP4 Mac model halves decode time against BF16 and leaves prefill almost unchanged.
+3. The MXFP4 Mac model decodes 1.8 to 2.9 times as fast as BF16 (42.7 to 77 tok/s at 28k, 60 to 178 at 1k) and leaves prefill almost unchanged.
 
 Checksums were left on. Turning them off gave no further gain after change 2, and online FP8 on vLLM made prefill slower.
 
