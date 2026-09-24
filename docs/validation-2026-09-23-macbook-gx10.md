@@ -136,7 +136,7 @@ Method: a needle-in-a-haystack prompt with a fresh random filler and passphrase 
 - **GX10-only:** vLLM prefills and decodes.
 - **Split:** vLLM prefills on the GX10, the KV cache comes back over MCDMA, oMLX decodes. Checksums were on (the default).
 
-The split runs used the connector with one change, python-isal's CRC-32 in place of zlib's, proposed separately; see the next section. All 45 requests returned exactly 128 tokens and the correct passphrase. In every split request oMLX reported all but the last three prompt tokens as coming from the transferred cache.
+The split runs used the connector with one change, python-isal's CRC-32 in place of zlib's, from [#5](https://github.com/ashhart/MCDMA/pull/5); see the next section. All 45 requests returned exactly 128 tokens and the correct passphrase. In every split request oMLX reported all but the last three prompt tokens as coming from the transferred cache.
 
 | Prompt tokens | Mac-only first token, s | GX10-only first token, s | Split first token, s | Mac decode, tok/s | GX10 decode, tok/s | Split decode, tok/s |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -163,7 +163,7 @@ What this shows, for this model and these three runs per point:
 
 ### The producer checksum limited the handoff
 
-With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is proposed separately from this report.
+With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is in [#5](https://github.com/ashhart/MCDMA/pull/5).
 
 ## Not covered
 
