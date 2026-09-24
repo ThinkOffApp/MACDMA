@@ -199,6 +199,27 @@ The same runs as rates. Effective prefill is prompt tokens divided by the time t
 
 The note's decode rates are for an MXFP4 checkpoint and ours for BF16, which reads about four times as many weight bytes per token. The decode columns therefore compare the two setups as run, not the machines.
 
+### MXFP4 on the Mac
+
+The note's model was MXFP4, and at the same quantisation the decode rates can be compared directly. On 24 September (02:51 to 02:57 UTC) the Mac's copy of the model was converted with mlx-lm 0.32.0 (`mlx_lm convert -q --q-mode mxfp4 --q-group-size 32 --q-bits 4`, 4.25 bits per weight). The GX10 kept prefilling in BF16 with 16k chunks, because the note's matching compressed-tensors converter is not published. The split therefore decodes an MXFP4 model from a cache that a BF16 model computed, which is a different computation from the note's all-MXFP4 run. All 17 split requests logged a completed handoff with no failures. Medians of three, 128-token replies; best value per row in bold:
+
+| Prompt, ours / note | Prefill tok/s: ours Mac-only / ours split / note Studio-only / note split | Decode tok/s: ours Mac / note Studio | Output tok/s over the whole reply: ours Mac-only / ours split / note Studio-only / note split |
+|---|---|---|---|
+| 3,831 / 3,852 | 4,892 / 4,361 / 2,363 / **5,068** | **155** / 147 | **79.9** / 75.8 / 51.2 / 69.6 |
+| 7,600 / 7,702 | 4,352 / 4,811 / 2,127 / **4,937** | **133** / 131 | 47.4 / **50.5** / 27.7 / 43.1 |
+| 15,140 / 15,402 | 3,408 / **4,453** / 1,748 / 4,375 | 106 / **109** | 22.7 / **27.6** / 12.8 / 23.1 |
+| 28,270 / 28,852 | 2,651 / **3,734** / 1,292 / 3,570 | 77 / **83** | 9.9 / **13.9** / 5.3 / 11.4 |
+
+At the same quantisation the M5 Max decoded within about 8% of the M3 Ultra at every length, so the BF16 gap above was the weights. At 28,270 tokens the split's reply took 9.24 s against 12.90 s Mac-only (28% less time). The note's split took 11.21 s at 28,852 tokens. 28 of 30 answers were correct. The two misses were a digit off in the passphrase, one in each configuration. Replaying both prompts in both configurations, with oMLX's prefix cache moved aside, reproduced the misses in all four runs, with the same wrong passphrase at 28k in both. The misses are therefore the 4-bit model on those two prompts, not the handoff. The 1,035-token rows are omitted here for the same reason as above.
+
+### What changed from the untuned run
+
+1. The producer's CRC-32 uses python-isal instead of zlib (#5): checked transfers went from 16 to 19 Gbit/s to 26 to 30.
+2. vLLM `--max-num-batched-tokens 16384`: the GX10's 28k prefill went from about 6.4 s to 6.0 s.
+3. The MXFP4 Mac model halves decode time against BF16 and leaves prefill almost unchanged.
+
+Checksums were left on. Turning them off gave no further gain after change 2, and online FP8 on vLLM made prefill slower.
+
 ### The producer checksum limited the handoff
 
 With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is in [#5](https://github.com/ashhart/MCDMA/pull/5).
