@@ -188,6 +188,17 @@ The [disaggregated-inference note](disaggregated-inference.md) reports the same 
 
 The two lower rows of our split use the 16k prefill chunks from the tuning runs; the others use vLLM's default. In absolute time the two splits were close: 10.54 s and 11.21 s at the longest prompt. The percentages differ mainly because of the Mac-only baseline. The M5 Max prefilled about twice as fast as the note's M3 Ultra, which leaves the remote prefill less to save.
 
+The same runs as rates. Effective prefill is prompt tokens divided by the time to the first token, so for the splits it includes the handoff. Decode is the streamed rate after the first token, which the split does not change.
+
+| Prompt, ours / note | Ours: Mac-only prefill, tok/s | Ours: split prefill, tok/s | Note: Studio-only prefill, tok/s | Note: split prefill, tok/s | Ours: Mac / GX10 decode, tok/s | Note: Studio / Spark decode, tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| 3,830 / 3,852 | 5,176 | 4,352 | 2,363 | 5,068 | 57.6 / 21.1 | 147 / 60 |
+| 7,600 / 7,702 | 4,606 | 4,524 | 2,128 | 4,937 | 55.3 / 20.0 | 131 / 53 |
+| 15,141 / 15,402 | 3,505 | 4,506 | 1,748 | 4,376 | 50.4 / 18.3 | 109 / 42 |
+| 28,270 / 28,852 | 2,589 | 3,774 | 1,293 | 3,571 | 42.7 / 15.9 | 83 / 31 |
+
+The note's decode rates are for an MXFP4 checkpoint and ours for BF16, which reads about four times as many weight bytes per token. The decode columns therefore compare the two setups as run, not the machines.
+
 ### The producer checksum limited the handoff
 
 With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is in [#5](https://github.com/ashhart/MCDMA/pull/5).
