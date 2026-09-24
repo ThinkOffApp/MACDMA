@@ -126,6 +126,45 @@ What a Mac-to-GB10 link delivered on our bench before MCDMA, next to the RDMA me
 (2) Measured 23 September 2026 at 18:25 UTC, before installing MCDMA, 10 s per run, MTU 1500 (Apple's driver caps this port at 2034). Earlier runs the same day on the other GX10 port gave 25.9 / 29.1 out and 19.0 / 13.3 in, so single TCP runs vary by several Gbit/s.
 (3) Measured 17 September 2026. The outbound figures are file copies, not `iperf3`. A separate `iperf3` run gave about 9.4 Gbit/s, but its direction was not recorded, so it is not placed in either column.
 
+## A model over this link: remote prefill with oMLX
+
+Later the same evening (19:58 to 20:35 UTC) the link carried a real model handoff: [jundot/omlx#3870](https://github.com/jundot/omlx/pull/3870) on the MacBook decoding from this repository's vLLM connector (`integrations/vllm/mcdma_kv`) on the GX10, through `mcdma-rpcd` (one link, 4 MiB request and 64 MiB reply halves). Both sides ran `Qwen/Qwen3-4B-Instruct-2507` in BF16: vLLM 0.27.1 in NVIDIA's `nvcr.io/nvidia/vllm:26.08-py3` container on the GX10, oMLX 0.7.0.dev4 at the #3870 head on the Mac. To our knowledge this is the first run of that path on hardware.
+
+Method: a needle-in-a-haystack prompt with a fresh random filler and passphrase for every request, so no prefix cache could help. The prompt asked for the passphrase and then a story of about 300 words, so every reply ran to the 128-token cap. Greedy decoding, streamed; times are measured by the client end to end. Three configurations, three requests per prompt length, medians:
+
+- **Mac-only:** oMLX prefills and decodes.
+- **GX10-only:** vLLM prefills and decodes.
+- **Split:** vLLM prefills on the GX10, the KV cache comes back over MCDMA, oMLX decodes. Checksums were on (the default).
+
+The split runs used the connector with one change, python-isal's CRC-32 in place of zlib's, proposed separately; see the next section. All 45 requests returned exactly 128 tokens and the correct passphrase. In every split request oMLX reported all but the last three prompt tokens as coming from the transferred cache.
+
+| Prompt tokens | Mac-only first token, s | GX10-only first token, s | Split first token, s | Mac decode, tok/s | GX10 decode, tok/s | Split decode, tok/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,035 | 1.55 | 0.19 | 0.31 | 60.4 | 21.9 | 59.6 |
+| 3,830 | 0.74 | 0.77 | 0.88 | 57.6 | 21.1 | 58.2 |
+| 7,600 | 1.65 | 1.30 | 1.68 | 55.3 | 20.0 | 55.4 |
+| 15,141 | 4.32 | 2.71 | 3.54 | 50.4 | 18.3 | 50.7 |
+| 28,270 | 10.92 | 6.51 | 7.99 | 42.7 | 15.9 | 42.8 |
+
+| Prompt tokens | Mac-only 128-token reply, s | GX10-only, s | Split, s |
+|---:|---:|---:|---:|
+| 1,035 | 3.73 | 6.00 | 2.44 |
+| 3,830 | 2.95 | 6.76 | 3.06 |
+| 7,600 | 3.95 | 7.60 | 3.96 |
+| 15,141 | 6.84 | 9.66 | 6.04 |
+| 28,270 | 13.90 | 14.51 | 10.93 |
+
+What this shows, for this model and these three runs per point:
+
+- The split kept the Mac's decode rate, about 2.7 times this GX10 baseline, and moved prefill to the GX10. At 28,270 tokens its 128-token reply took 21% less time than Mac-only, and at 15,141 tokens 12% less. At 3,830 and 7,600 tokens the configurations were within a few percent of each other.
+- The 1,035-token Mac-only first token (1.55 s, longer than at 3,830 tokens) appeared in two of three Mac-only requests and was not investigated, so the split's apparent lead at that length is not claimed.
+- The M5 Max prefilled 28,270 tokens in about 10.9 s. The [disaggregated-inference note](disaggregated-inference.md) reports 22.32 s for 28,852 tokens on the M3 Ultra Studio, with an MXFP4 checkpoint and summed stage times. The quantisation and the method differ, so this is context, not a matched comparison; it is why the split gains less on this Mac than in that note.
+- The GX10 decode figures are BF16 in an untuned vLLM configuration and should not be read as the GB10's best decode rate.
+
+### The producer checksum limited the handoff
+
+With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is proposed separately from this report.
+
 ## Not covered
 
-One link only; the second CX-5 port was not cabled. No concurrent-port runs, no process-termination matrix, no keepalive A/B on an otherwise idle machine, no GPU-buffer paths, no inference workload, and no long soak. The MacBook was on AC power, battery full, default power mode (checked with `pmset` after the runs, not controlled during them). Raw CSVs, manifests and logs are kept outside this repository because they contain addresses and memory-region keys.
+One link only; the second CX-5 port was not cabled. No concurrent-port runs, no process-termination matrix, no keepalive A/B on an otherwise idle machine, no GPU-buffer paths, one small model only (above), and no long soak. The MacBook was on AC power, battery full, default power mode (checked with `pmset` after the runs, not controlled during them). Raw CSVs, manifests and logs are kept outside this repository because they contain addresses and memory-region keys.
