@@ -161,9 +161,39 @@ bool Hca::configure_roce() {
     header(0x755); cx5::write_be32(input_+12,2); input_[259]=1;
     if (!call(512)) return false;
     if (!source_gid(true)) return false;
+    return write_port_admin(1) && configure_ethernet_mtu(1500);
+}
+bool Hca::write_port_admin(uint8_t status) {
+    // PAOS: admin status 1 (up) or 2 (down), with the admin-state enable bit.
     header(0x805); cx5::write_be32(input_+8,0x5006);
-    input_[17]=1; input_[18]=1; input_[20]=0x80;
-    return call(32,32) && configure_ethernet_mtu(1500);
+    input_[17]=1; input_[18]=status; input_[20]=0x80;
+    return call(32,32);
+}
+bool Hca::query_port_speed(PortSpeed &speed) {
+    speed=PortSpeed{};
+    if (!transport.ready() || !transport.initialized) return false;
+    // PTYS is 64 bytes: local port 1, Ethernet protocol mask.
+    header(0x805,1); cx5::write_be32(input_+8,0x5004); input_[17]=1; input_[19]=4;
+    if (!call(80,80)) return false;
+    const uint8_t *reg=output_+16;
+    speed.autoneg_disabled=(reg[0]>>6)&1; speed.autoneg_disable_capable=(reg[0]>>5)&1;
+    speed.autoneg_status=uint8_t(reg[4]>>4);
+    speed.capability=cx5::read_be32(reg+12); speed.admin=cx5::read_be32(reg+24);
+    speed.oper=cx5::read_be32(reg+36); speed.partner=cx5::read_be32(reg+48);
+    return true;
+}
+bool Hca::set_port_speed(uint32_t admin, bool autoneg_disable) {
+    if (!transport.ready() || !transport.initialized || qps_) return false;
+    PortSpeed before{};
+    if (!query_port_speed(before) || !admin || (admin&~before.capability)) return false;
+    if (autoneg_disable && !before.autoneg_disable_capable) return false;
+    header(0x805); cx5::write_be32(input_+8,0x5004); input_[17]=1; input_[19]=4;
+    if (autoneg_disable) input_[16]|=0x40;
+    cx5::write_be32(input_+16+24,admin);
+    if (!call(80,80)) return false;
+    // Cycle the port as mlx5_toggle_port_link does, so the new advertisement
+    // is negotiated instead of waiting for the next cable event.
+    return write_port_admin(2) && write_port_admin(1);
 }
 bool Hca::query_mtu(MtuState &state) {
     header(0x805,1); cx5::write_be32(input_+8,0x5003); input_[17]=1;

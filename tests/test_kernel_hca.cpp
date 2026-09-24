@@ -181,6 +181,36 @@ void pcie_counters() {
     assert(hca.port_active(active) && active);
     assert(hca.stop() && !sim.buffers);
 }
+void port_speed() {
+    reset(); Hca hca; Hca::PortSpeed speed;
+    assert(!hca.query_port_speed(speed));
+    assert(hca.start());
+    // Startup brings the port up once and never touches the speed.
+    assert(sim.paos_writes==std::vector<uint8_t>{1} && !sim.ptys_writes);
+    sim.ptys_partner=1u<<27; sim.ptys_an_status=1;
+    assert(hca.query_port_speed(speed));
+    assert(speed.capability==((1u<<12)|(1u<<27)) && speed.admin==1u<<12 && speed.oper==1u<<12);
+    assert(speed.partner==1u<<27 && speed.autoneg_status==1);
+    assert(speed.autoneg_disable_capable && !speed.autoneg_disabled);
+    // Empty or unsupported advertisements are refused before any write.
+    assert(!hca.set_port_speed(0,false) && !hca.set_port_speed(1u<<20,false) && !sim.ptys_writes);
+    // Advertise 10G and 25G with autonegotiation, then cycle the port down and up.
+    assert(hca.set_port_speed((1u<<12)|(1u<<27),false));
+    assert(sim.ptys_writes==1 && sim.ptys_admin==((1u<<12)|(1u<<27)) && !sim.ptys_an_disabled);
+    assert((sim.paos_writes==std::vector<uint8_t>{1,2,1}));
+    assert(hca.set_port_speed(1u<<27,true) && sim.ptys_an_disabled && sim.ptys_admin==1u<<27);
+    // Forcing needs the capability bit.
+    sim.ptys_an_disable_cap=false;
+    assert(!hca.set_port_speed(1u<<27,true) && sim.ptys_writes==2);
+    // Refused while a QP exists, as for the MTU.
+    HardwareObject pd; HardwareCQ cq; HardwareQP qp;
+    assert(hca.alloc_pd(pd) && hca.create_cq(cq) && hca.create_qp(qp,pd.id,cq,cq));
+    const unsigned before=sim.calls;
+    assert(!hca.set_port_speed(1u<<12,false) && sim.calls==before && sim.ptys_writes==2);
+    assert(hca.destroy_qp(qp) && hca.destroy_cq(cq) && hca.dealloc_pd(pd));
+    assert(hca.set_port_speed(1u<<12,false) && sim.ptys_writes==3 && !sim.ptys_an_disabled);
+    assert(hca.stop() && !sim.buffers);
+}
 void lifecycle() {
     reset(); Hca hca;
     assert(hca.start() && sim.pages.size()==4 && sim.buffers==3);
@@ -507,6 +537,7 @@ int main() {
     mtu_configuration();
     driver_startup();
     pcie_counters();
+    port_speed();
     lifecycle(); failed_create(false); failed_create(true); corrupt_completion(); corrupt_page_return();
     native_data_callbacks();
     for (uint32_t initial: {0u,29u,31u,32u,63u,0xfffffffeu}) {

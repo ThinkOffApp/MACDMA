@@ -136,8 +136,23 @@ bool Transport::execute(const uint8_t *in,size_t in_bytes,uint8_t *out,size_t ou
             for (unsigned i=0;i<16;++i) cx5::write_be32(out+24+4*i,sim.mpcnt[i]);
             break;
         }
+        if (cx5::read_be32(in+8)==0x5004) {
+            // Local port 1, Ethernet protocols only.
+            assert(in_bytes==80 && out_bytes==80 && in[17]==1 && (in[19]&7)==4);
+            if (cx5::read_be32(in+4)==0) {
+                const uint32_t admin=cx5::read_be32(in+16+24);
+                assert(admin && !(admin&~sim.ptys_capability));
+                sim.ptys_admin=admin; sim.ptys_an_disabled=(in[16]>>6)&1; ++sim.ptys_writes;
+            } else assert(cx5::read_be32(in+4)==1);
+            out[16]=uint8_t((sim.ptys_an_disabled?0x40:0)|(sim.ptys_an_disable_cap?0x20:0));
+            out[17]=1; out[19]=4; out[20]=uint8_t(sim.ptys_an_status<<4);
+            cx5::write_be32(out+16+12,sim.ptys_capability); cx5::write_be32(out+16+24,sim.ptys_admin);
+            cx5::write_be32(out+16+36,sim.ptys_oper); cx5::write_be32(out+16+48,sim.ptys_partner);
+            break;
+        }
         assert(in_bytes==32 && out_bytes==32 && in[17]==1);
         if (cx5::read_be32(in+8)==0x5006) {
+            if (cx5::read_be32(in+4)==0) { assert(in[20]==0x80); sim.paos_writes.push_back(in[18]); }
             if (sim.port_gate) {
                 sim.blocked_command_lock=test_held_locks.back(); sim.port_arrived.set_value();
                 sim.port_continue.get_future().wait();

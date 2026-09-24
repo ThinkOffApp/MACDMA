@@ -261,6 +261,27 @@ bool AppleProvider::sample_pcie_counters(Hca::PcieCounters &counters,bool &sampl
     if (!hca->query_pcie_counters(counters)) return false;
     sampled=true; return true;
 }
+bool AppleProvider::query_port_speed(Hca::PortSpeed &speed) {
+    speed=Hca::PortSpeed{};
+    CommandGuard command(this);
+    Hca *hca=nullptr;
+    {
+        Guard guard(this);
+        if (!ready()) return false;
+        hca=hca_;
+    }
+    return hca->query_port_speed(speed);
+}
+bool AppleProvider::set_port_speed(uint32_t admin,bool autoneg_disable) {
+    CommandGuard command(this);
+    Hca *hca=nullptr;
+    {
+        Guard guard(this);
+        if (!ready()) return false;
+        hca=hca_;
+    }
+    return hca->set_port_speed(admin,autoneg_disable);
+}
 AppleProvider::GidStatus AppleProvider::gid_status() {
     Guard guard(this); return {gid_live_,gid_adds_,gid_deletes_};
 }

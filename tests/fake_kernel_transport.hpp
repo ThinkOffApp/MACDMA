@@ -33,6 +33,10 @@ struct Simulation {
     bool reject_jumbo_vport_once=false,ignore_jumbo_port_once=false;
     // MPCNT group 0: the 16 counters in register order, and firmware support.
     uint32_t mpcnt[16]{}; bool mpcnt_supported=true; unsigned mpcnt_queries=0;
+    // PTYS port speed (legacy eth_proto masks) and every PAOS admin write in order.
+    uint32_t ptys_capability=(1u<<12)|(1u<<27), ptys_admin=1u<<12, ptys_oper=1u<<12, ptys_partner=0;
+    uint8_t ptys_an_status=0; bool ptys_an_disable_cap=true, ptys_an_disabled=false;
+    unsigned ptys_writes=0; std::vector<uint8_t> paos_writes;
     std::map<uint64_t,uint8_t *> maps;
     std::map<uint32_t,uint64_t> cq_dma, qp_dma;
     std::vector<uint8_t> command;

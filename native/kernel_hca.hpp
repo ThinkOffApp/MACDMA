@@ -47,6 +47,20 @@ public:
         uint32_t stalled_reads=0, stalled_writes=0, stalled_reads_events=0, stalled_writes_events=0;
     };
     bool query_pcie_counters(PcieCounters &counters);
+    // Ethernet port speed: an ACCESS_REG of PTYS with the legacy eth_proto
+    // masks (bit numbers as Linux enum mlx5e_link_mode: 10GBASE-CR is bit 12,
+    // 25GBASE-CR bit 27). The driver leaves the firmware's setting alone unless
+    // set_port_speed is called.
+    struct PortSpeed {
+        uint32_t capability=0, admin=0, oper=0, partner=0;
+        uint8_t autoneg_status=0;
+        bool autoneg_disable_capable=false, autoneg_disabled=false;
+    };
+    bool query_port_speed(PortSpeed &speed);
+    // Advertises `admin`, a non-empty subset of the capability, with
+    // autonegotiation on unless `autoneg_disable`, then cycles the port so the
+    // firmware renegotiates. Refused while QPs exist, as for the MTU.
+    bool set_port_speed(uint32_t admin, bool autoneg_disable);
     // Startup-only MTU configuration; refuses changes while QPs exist.
     bool configure_ethernet_mtu(uint16_t bytes);
     uint16_t ethernet_mtu=0, max_ethernet_mtu=0;
@@ -136,6 +150,7 @@ private:
     bool query_mtu(MtuState &state);
     bool write_port_mtu(uint16_t frame_bytes);
     bool write_vport_mtu(uint16_t frame_bytes);
+    bool write_port_admin(uint8_t status);
     bool purge_qp_completions(HardwareCQ &cq, uint32_t qpn);
     void rebuild_cq_accounting(HardwareCQ &cq);
     bool configure_uar_pages();

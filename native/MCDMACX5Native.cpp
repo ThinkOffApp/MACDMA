@@ -17,7 +17,35 @@ struct MCDMACX5Native::State {
     cx5_native::AppleProvider::GidStatus gid{};
     unsigned pcie_polls=0;
     bool pcie_counters_refused=false;
+    // Polls left in which to re-read the port speed after a change request;
+    // renegotiation finishes after the request returns. Written by
+    // setProperties and read by the poll; a lost update costs one re-read.
+    unsigned port_speed_polls=0;
 };
+namespace {
+const char *eth_proto_name(uint32_t mask) {
+    // Legacy PTYS eth_proto bits, numbered as Linux enum mlx5e_link_mode.
+    static const struct { uint8_t bit; const char *name; } names[]={
+        {0,"1000BASE-CX-SGMII"},{1,"1000BASE-KX"},{2,"10GBASE-CX4"},{3,"10GBASE-KX4"},{4,"10GBASE-KR"},
+        {5,"20GBASE-KR2"},{6,"40GBASE-CR4"},{7,"40GBASE-KR4"},{8,"56GBASE-R4"},{12,"10GBASE-CR"},
+        {13,"10GBASE-SR"},{14,"10GBASE-ER"},{15,"40GBASE-SR4"},{16,"40GBASE-LR4"},{18,"50GBASE-SR2"},
+        {20,"100GBASE-CR4"},{21,"100GBASE-SR4"},{22,"100GBASE-KR4"},{23,"100GBASE-LR4"},{24,"100BASE-TX"},
+        {25,"1000BASE-T"},{26,"10GBASE-T"},{27,"25GBASE-CR"},{28,"25GBASE-KR"},{29,"25GBASE-SR"},
+        {30,"50GBASE-CR2"},{31,"50GBASE-KR2"}};
+    if (!mask) return "none";
+    for (const auto &entry: names) if (mask==(1u<<entry.bit)) return entry.name;
+    return "other";
+}
+void publish_port_speed(IOService *service,const cx5_native::Hca::PortSpeed &speed) {
+    service->setProperty("MCDMAPortSpeed",eth_proto_name(speed.oper));
+    service->setProperty("MCDMAPortSpeedOper",speed.oper,32);
+    service->setProperty("MCDMAPortSpeedCapability",speed.capability,32);
+    service->setProperty("MCDMAPortSpeedAdvertised",speed.admin,32);
+    service->setProperty("MCDMAPortSpeedPartner",speed.partner,32);
+    service->setProperty("MCDMAPortAutonegStatus",speed.autoneg_status,32);
+    service->setProperty("MCDMAPortAutonegDisabled",speed.autoneg_disabled);
+}
+}
 IOWorkLoop *MCDMACX5Native::getWorkLoop() const { return workloop_; }
 bool MCDMACX5Native::start(IOService *parent) {
     // The bundle also requires explicit lab enablement; merely loading it
@@ -74,6 +102,20 @@ bool MCDMACX5Native::start(IOService *parent) {
     setProperty("MCDMAFrameAdminMTU",s.hca.frame_admin_mtu,32);
     setProperty("MCDMAFrameOperMTU",s.hca.frame_oper_mtu,32);
     setProperty("MCDMAVportFrameMTU",s.hca.vport_frame_mtu,32);
+    stage="port-speed";
+    {
+        // The firmware's stored advertisement stays in force unless the
+        // personality sets MCDMAPortSpeedAdmin (and optionally
+        // MCDMAPortSpeedForce). A refusal is reported, not fatal.
+        if (auto *number=OSDynamicCast(OSNumber,getProperty("MCDMAPortSpeedAdmin"))) {
+            const bool force=getProperty("MCDMAPortSpeedForce")==kOSBooleanTrue;
+            setProperty("MCDMAPortSpeedResult",
+                        s.hca.set_port_speed(number->unsigned32BitValue(),force)?"applied at start":"refused at start");
+        }
+        cx5_native::Hca::PortSpeed speed{};
+        if (s.hca.query_port_speed(speed)) publish_port_speed(this,speed);
+        else setProperty("MCDMAPortSpeed","unavailable");
+    }
     stage="address-interface";
     if (!s.network.attach(this,s.hca.mac,s.hca.ethernet_mtu)) goto failure;
     stage="verbs-prepare";
@@ -152,6 +194,30 @@ IOReturn MCDMACX5Native::setProperties(OSObject *properties) {
         setProperty("MCDMAMaxReadRequestApplied",s.hca.transport.max_read_request_applied(),32);
         handled=true;
     }
+    if (auto *value=dictionary->getObject("MCDMAPortSpeedForce")) {
+        if (value!=kOSBooleanTrue && value!=kOSBooleanFalse) return kIOReturnBadArgument;
+        setProperty("MCDMAPortSpeedForce",value==kOSBooleanTrue);
+        handled=true;
+    }
+    if (auto *value=OSDynamicCast(OSNumber,dictionary->getObject("MCDMAPortSpeedAdmin"))) {
+        // Rewrites the advertised Ethernet protocols and cycles the port, so
+        // the link drops briefly. Refused while any QP exists.
+        const bool force=getProperty("MCDMAPortSpeedForce")==kOSBooleanTrue;
+        const bool applied=s.verbs.set_port_speed(value->unsigned32BitValue(),force);
+        setProperty("MCDMAPortSpeedResult",applied?"applied":"refused");
+        cx5_native::Hca::PortSpeed speed{};
+        if (s.verbs.query_port_speed(speed)) publish_port_speed(this,speed);
+        if (!applied) return kIOReturnNotPermitted;
+        setProperty("MCDMAPortSpeedAdmin",value->unsigned32BitValue(),32);
+        s.port_speed_polls=20;
+        handled=true;
+    }
+    if (dictionary->getObject("MCDMAPortSpeedQuery")) {
+        cx5_native::Hca::PortSpeed speed{};
+        if (!s.verbs.query_port_speed(speed)) return kIOReturnUnsupported;
+        publish_port_speed(this,speed);
+        handled=true;
+    }
     return handled ? kIOReturnSuccess : kIOReturnUnsupported;
 }
 void MCDMACX5Native::poll(OSObject *owner,IOTimerEventSource *timer) {
@@ -170,6 +236,15 @@ void MCDMACX5Native::poll(OSObject *owner,IOTimerEventSource *timer) {
         s.active=active; s.network.link(active);
         self->setProperty("MCDMAPortActive",active);
         s.verbs.dispatch_port_event(active);
+        // The negotiated speed is only known once the link is up again.
+        if (!s.port_speed_polls) s.port_speed_polls=1;
+    }
+    // Re-read the speed on a link change and for ten seconds after a change
+    // request; otherwise it costs no firmware commands.
+    if (s.port_speed_polls) {
+        --s.port_speed_polls;
+        cx5_native::Hca::PortSpeed speed{};
+        if (s.verbs.query_port_speed(speed)) publish_port_speed(self,speed);
     }
     if (s.hca.relaxed_ordering_requested) {
         self->setProperty("MCDMARelaxedOrderingRefused",s.hca.relaxed_ordering_refused);
