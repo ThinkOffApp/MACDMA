@@ -161,6 +161,19 @@ What this shows, for this model and these three runs per point:
 - The M5 Max prefilled 28,270 tokens in about 10.9 s. The [disaggregated-inference note](disaggregated-inference.md) reports 22.32 s for 28,852 tokens on the M3 Ultra Studio, with an MXFP4 checkpoint and summed stage times. The quantisation and the method differ, so this is context, not a matched comparison; it is why the split gains less on this Mac than in that note.
 - The GX10 decode figures are BF16 in an untuned vLLM configuration and should not be read as the GB10's best decode rate.
 
+### Tuning the split, 24 September
+
+On 24 September between 02:27 and 02:37 UTC the split was rerun at 15,137 and 28,267 prompt tokens, three fresh prompts each, with the same client and 128-token replies. All other settings were unchanged except as listed. Every split row was accepted only if oMLX logged a completed remote handoff for that request, and each of the 18 split requests did. Before these runs, removing a second ConnectX card from the Mac had renumbered the MCDMA interfaces (`mcrdma3` became `mcrdma1`). That dropped the link until `tools/restore-rdma.py` was rerun on the new name. Requests during the outage fell back to local prefill and are excluded.
+
+| 28,267-token prompt | First token, s | 128-token reply, s | GX10 prefill, s (oMLX log) | Transfer, s |
+|---|---:|---:|---:|---:|
+| Split as above (vLLM default `max_num_batched_tokens` 2048) | 7.99 | 10.93 | 6.31 to 6.70 | 1.24 to 1.28 |
+| `--max-num-batched-tokens 16384` | 7.49 | 10.54 | 5.95 to 6.01 | 1.11 to 1.14 |
+| 16384, checksums off | 7.48 | 10.42 | 6.18 to 6.23 | 0.87 to 0.88 |
+| 16384, `--quantization fp8` on vLLM | 8.24 | 11.20 | 6.66 | 1.22 to 1.25 |
+
+With larger prefill chunks the split's reply took 24% less time than the Mac-only 13.90 s. At 15,137 tokens it was 5.88 s against 6.84 s. Turning checksums off shortened the transfer but not the first token in these three runs. Online FP8 weights roughly doubled vLLM's own decode rate (25.0 to 43.9 tok/s over the five lengths) but made the 28k prefill slower, so the split lost time; FP8 accuracy was not evaluated beyond the passphrase check. The remaining transfer, about 1.1 s at 28k, is the part that streaming layers during prefill would hide. That was not attempted.
+
 ### The producer checksum limited the handoff
 
 With per-frame checksums on and the connector as published, oMLX logged KV transfers of 16 to 19 Gbit/s. For example, 28,268-token handoffs took 1.78, 2.06 and 2.07 s. With `OMLX_REMOTE_PREFILL_CHECKSUM=0` the same handoffs took 0.94 to 0.96 s, about 35 Gbit/s. The responder computes `zlib.crc32` serially for each frame, and in this container zlib's CRC-32 ran at 6.4 GB/s on the GB10. The Mac's ran at 42 GB/s. python-isal computes the same CRC-32 at 18.9 GB/s there. With it, checked handoffs took 1.24 to 1.28 s (26 to 27 Gbit/s), and the 28k first token went from 8.74 s (zlib, median of three) to 8.08 s. With checksums off it was 7.70 s. That change, with tests for both code paths, is in [#5](https://github.com/ashhart/MCDMA/pull/5).
