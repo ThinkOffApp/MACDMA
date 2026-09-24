@@ -272,12 +272,12 @@ bool AppleProvider::query_port_speed(Hca::PortSpeed &speed) {
     }
     return hca->query_port_speed(speed);
 }
-bool AppleProvider::set_port_speed(uint32_t admin,bool autoneg_disable) {
+Hca::SpeedResult AppleProvider::set_port_speed(uint32_t admin,bool autoneg_disable) {
     CommandGuard command(this);
     Hca *hca=nullptr;
     {
         Guard guard(this);
-        if (!ready()) return false;
+        if (!ready()) return Hca::SpeedResult::refused;
         hca=hca_;
     }
     return hca->set_port_speed(admin,autoneg_disable);

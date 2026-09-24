@@ -59,8 +59,12 @@ public:
     bool query_port_speed(PortSpeed &speed);
     // Advertises `admin`, a non-empty subset of the capability, with
     // autonegotiation on unless `autoneg_disable`, then cycles the port so the
-    // firmware renegotiates. Refused while QPs exist, as for the MTU.
-    bool set_port_speed(uint32_t admin, bool autoneg_disable);
+    // firmware renegotiates. Refused, with nothing sent, while QPs exist, as
+    // for the MTU. After any failed step the previous advertisement is written
+    // back and the port brought up; recovery_required means that also failed
+    // and the port may be down or on either setting.
+    enum class SpeedResult { applied, refused, failed_restored, recovery_required };
+    SpeedResult set_port_speed(uint32_t admin, bool autoneg_disable);
     // Startup-only MTU configuration; refuses changes while QPs exist.
     bool configure_ethernet_mtu(uint16_t bytes);
     uint16_t ethernet_mtu=0, max_ethernet_mtu=0;
@@ -151,6 +155,7 @@ private:
     bool write_port_mtu(uint16_t frame_bytes);
     bool write_vport_mtu(uint16_t frame_bytes);
     bool write_port_admin(uint8_t status);
+    bool write_port_speed(uint32_t admin, bool autoneg_disable);
     bool purge_qp_completions(HardwareCQ &cq, uint32_t qpn);
     void rebuild_cq_accounting(HardwareCQ &cq);
     bool configure_uar_pages();

@@ -208,8 +208,8 @@ void callbacks_and_protection() {
     // Port speed goes through the command lock like the samplers.
     Hca::PortSpeed speed;
     assert(provider.query_port_speed(speed) && speed.oper==1u<<12 && speed.capability==((1u<<12)|(1u<<27)));
-    assert(!provider.set_port_speed(1u<<20,false) && !sim.ptys_writes);
-    assert(provider.set_port_speed((1u<<12)|(1u<<27),false) && sim.ptys_writes==1);
+    assert(provider.set_port_speed(1u<<20,false)==Hca::SpeedResult::refused && !sim.ptys_writes);
+    assert(provider.set_port_speed((1u<<12)|(1u<<27),false)==Hca::SpeedResult::applied && sim.ptys_writes==1);
     Session s,other; s.open(provider); s.resources(); other.open(provider);
     assert(AppleProvider::alloc_pd(other.pd,s.udata)==0);
     void *wrong=nullptr;

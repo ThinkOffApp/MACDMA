@@ -18,8 +18,8 @@ struct MCDMACX5Native::State {
     unsigned pcie_polls=0;
     bool pcie_counters_refused=false;
     // Polls left in which to re-read the port speed after a change request;
-    // renegotiation finishes after the request returns. Written by
-    // setProperties and read by the poll; a lost update costs one re-read.
+    // renegotiation finishes after the request returns. Only touched on the
+    // workloop: by the poll and through runAction from setProperties.
     unsigned port_speed_polls=0;
 };
 namespace {
@@ -35,6 +35,15 @@ const char *eth_proto_name(uint32_t mask) {
     if (!mask) return "none";
     for (const auto &entry: names) if (mask==(1u<<entry.bit)) return entry.name;
     return "other";
+}
+const char *speed_result_name(cx5_native::Hca::SpeedResult result) {
+    switch (result) {
+    case cx5_native::Hca::SpeedResult::applied: return "applied";
+    case cx5_native::Hca::SpeedResult::refused: return "refused";
+    case cx5_native::Hca::SpeedResult::failed_restored: return "failed, previous setting restored";
+    case cx5_native::Hca::SpeedResult::recovery_required: return "failed, recovery required: port may be down";
+    }
+    return "unknown";
 }
 void publish_port_speed(IOService *service,const cx5_native::Hca::PortSpeed &speed) {
     service->setProperty("MCDMAPortSpeed",eth_proto_name(speed.oper));
@@ -109,8 +118,10 @@ bool MCDMACX5Native::start(IOService *parent) {
         // MCDMAPortSpeedForce). A refusal is reported, not fatal.
         if (auto *number=OSDynamicCast(OSNumber,getProperty("MCDMAPortSpeedAdmin"))) {
             const bool force=getProperty("MCDMAPortSpeedForce")==kOSBooleanTrue;
-            setProperty("MCDMAPortSpeedResult",
-                        s.hca.set_port_speed(number->unsigned32BitValue(),force)?"applied at start":"refused at start");
+            char text[80];
+            snprintf(text,sizeof(text),"%s (at start)",
+                     speed_result_name(s.hca.set_port_speed(number->unsigned32BitValue(),force)));
+            setProperty("MCDMAPortSpeedResult",text);
         }
         cx5_native::Hca::PortSpeed speed{};
         if (s.hca.query_port_speed(speed)) publish_port_speed(this,speed);
@@ -202,14 +213,21 @@ IOReturn MCDMACX5Native::setProperties(OSObject *properties) {
     if (auto *value=OSDynamicCast(OSNumber,dictionary->getObject("MCDMAPortSpeedAdmin"))) {
         // Rewrites the advertised Ethernet protocols and cycles the port, so
         // the link drops briefly. Refused while any QP exists.
+        using Result=cx5_native::Hca::SpeedResult;
         const bool force=getProperty("MCDMAPortSpeedForce")==kOSBooleanTrue;
-        const bool applied=s.verbs.set_port_speed(value->unsigned32BitValue(),force);
-        setProperty("MCDMAPortSpeedResult",applied?"applied":"refused");
+        const Result result=s.verbs.set_port_speed(value->unsigned32BitValue(),force);
+        setProperty("MCDMAPortSpeedResult",speed_result_name(result));
         cx5_native::Hca::PortSpeed speed{};
         if (s.verbs.query_port_speed(speed)) publish_port_speed(this,speed);
-        if (!applied) return kIOReturnNotPermitted;
+        if (result==Result::refused) return kIOReturnNotPermitted;
+        // Watch the renegotiation for ten seconds; the counter belongs to the poll.
+        workloop_->runAction([](OSObject *owner,void *,void *,void *,void *)->IOReturn {
+            auto *self=OSDynamicCast(MCDMACX5Native,owner);
+            if (self && self->state_ && !self->stopping_) self->state_->port_speed_polls=20;
+            return kIOReturnSuccess;
+        },this);
+        if (result!=Result::applied) return kIOReturnIOError;
         setProperty("MCDMAPortSpeedAdmin",value->unsigned32BitValue(),32);
-        s.port_speed_polls=20;
         handled=true;
     }
     if (dictionary->getObject("MCDMAPortSpeedQuery")) {

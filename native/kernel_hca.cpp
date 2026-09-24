@@ -182,18 +182,26 @@ bool Hca::query_port_speed(PortSpeed &speed) {
     speed.oper=cx5::read_be32(reg+36); speed.partner=cx5::read_be32(reg+48);
     return true;
 }
-bool Hca::set_port_speed(uint32_t admin, bool autoneg_disable) {
-    if (!transport.ready() || !transport.initialized || qps_) return false;
-    PortSpeed before{};
-    if (!query_port_speed(before) || !admin || (admin&~before.capability)) return false;
-    if (autoneg_disable && !before.autoneg_disable_capable) return false;
+bool Hca::write_port_speed(uint32_t admin, bool autoneg_disable) {
     header(0x805); cx5::write_be32(input_+8,0x5004); input_[17]=1; input_[19]=4;
     if (autoneg_disable) input_[16]|=0x40;
     cx5::write_be32(input_+16+24,admin);
-    if (!call(80,80)) return false;
+    return call(80,80);
+}
+Hca::SpeedResult Hca::set_port_speed(uint32_t admin, bool autoneg_disable) {
+    if (!transport.ready() || !transport.initialized || qps_) return SpeedResult::refused;
+    PortSpeed before{};
+    if (!query_port_speed(before) || !admin || (admin&~before.capability) ||
+        (autoneg_disable && !before.autoneg_disable_capable)) return SpeedResult::refused;
     // Cycle the port as mlx5_toggle_port_link does, so the new advertisement
-    // is negotiated instead of waiting for the next cable event.
-    return write_port_admin(2) && write_port_admin(1);
+    // is negotiated instead of waiting for the next cable event. One retry of
+    // the final up; the port must not be left administratively down.
+    if (write_port_speed(admin,autoneg_disable) && write_port_admin(2) &&
+        (write_port_admin(1) || write_port_admin(1))) return SpeedResult::applied;
+    // A failed write may or may not have taken effect, so restore both the
+    // previous advertisement and the up state rather than guess which step ran.
+    return write_port_speed(before.admin,before.autoneg_disabled) && write_port_admin(1)
+        ? SpeedResult::failed_restored : SpeedResult::recovery_required;
 }
 bool Hca::query_mtu(MtuState &state) {
     header(0x805,1); cx5::write_be32(input_+8,0x5003); input_[17]=1;

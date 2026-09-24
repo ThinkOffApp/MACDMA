@@ -37,6 +37,9 @@ struct Simulation {
     uint32_t ptys_capability=(1u<<12)|(1u<<27), ptys_admin=1u<<12, ptys_oper=1u<<12, ptys_partner=0;
     uint8_t ptys_an_status=0; bool ptys_an_disable_cap=true, ptys_an_disabled=false;
     unsigned ptys_writes=0; std::vector<uint8_t> paos_writes;
+    // Injected refusals: the next PTYS write, and the next N PAOS down/up
+    // writes. A refused write changes nothing; port_admin is the applied state.
+    bool fail_ptys_write=false; unsigned fail_paos_down=0, fail_paos_up=0; uint8_t port_admin=0;
     std::map<uint64_t,uint8_t *> maps;
     std::map<uint32_t,uint64_t> cq_dma, qp_dma;
     std::vector<uint8_t> command;

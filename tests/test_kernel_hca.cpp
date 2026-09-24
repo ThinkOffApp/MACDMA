@@ -182,33 +182,61 @@ void pcie_counters() {
     assert(hca.stop() && !sim.buffers);
 }
 void port_speed() {
+    using R=Hca::SpeedResult;
     reset(); Hca hca; Hca::PortSpeed speed;
     assert(!hca.query_port_speed(speed));
     assert(hca.start());
     // Startup brings the port up once and never touches the speed.
-    assert(sim.paos_writes==std::vector<uint8_t>{1} && !sim.ptys_writes);
+    assert(sim.paos_writes==std::vector<uint8_t>{1} && sim.port_admin==1 && !sim.ptys_writes);
     sim.ptys_partner=1u<<27; sim.ptys_an_status=1;
     assert(hca.query_port_speed(speed));
     assert(speed.capability==((1u<<12)|(1u<<27)) && speed.admin==1u<<12 && speed.oper==1u<<12);
     assert(speed.partner==1u<<27 && speed.autoneg_status==1);
     assert(speed.autoneg_disable_capable && !speed.autoneg_disabled);
     // Empty or unsupported advertisements are refused before any write.
-    assert(!hca.set_port_speed(0,false) && !hca.set_port_speed(1u<<20,false) && !sim.ptys_writes);
+    assert(hca.set_port_speed(0,false)==R::refused && hca.set_port_speed(1u<<20,false)==R::refused);
+    assert(!sim.ptys_writes && sim.paos_writes.size()==1);
     // Advertise 10G and 25G with autonegotiation, then cycle the port down and up.
-    assert(hca.set_port_speed((1u<<12)|(1u<<27),false));
+    assert(hca.set_port_speed((1u<<12)|(1u<<27),false)==R::applied);
     assert(sim.ptys_writes==1 && sim.ptys_admin==((1u<<12)|(1u<<27)) && !sim.ptys_an_disabled);
-    assert((sim.paos_writes==std::vector<uint8_t>{1,2,1}));
-    assert(hca.set_port_speed(1u<<27,true) && sim.ptys_an_disabled && sim.ptys_admin==1u<<27);
+    assert((sim.paos_writes==std::vector<uint8_t>{1,2,1}) && sim.port_admin==1);
+    assert(hca.set_port_speed(1u<<27,true)==R::applied && sim.ptys_an_disabled && sim.ptys_admin==1u<<27);
     // Forcing needs the capability bit.
     sim.ptys_an_disable_cap=false;
-    assert(!hca.set_port_speed(1u<<27,true) && sim.ptys_writes==2);
-    // Refused while a QP exists, as for the MTU.
+    assert(hca.set_port_speed(1u<<27,true)==R::refused && sim.ptys_writes==2);
+    sim.ptys_an_disable_cap=true;
+    // From here the setting before each request is 25G forced.
+    const uint32_t old_admin=1u<<27, wanted=(1u<<12)|(1u<<27);
+    // A refused PTYS write: the old advertisement is written back, port stays up.
+    sim.paos_writes.clear(); sim.fail_ptys_write=true;
+    assert(hca.set_port_speed(wanted,false)==R::failed_restored);
+    assert(sim.ptys_admin==old_admin && sim.ptys_an_disabled && sim.port_admin==1);
+    // A refused port-down: restored, and the port is explicitly brought up.
+    sim.paos_writes.clear(); sim.fail_paos_down=1;
+    assert(hca.set_port_speed(wanted,false)==R::failed_restored);
+    assert(sim.ptys_admin==old_admin && sim.ptys_an_disabled && sim.port_admin==1);
+    assert((sim.paos_writes==std::vector<uint8_t>{2,1}));
+    // One refused port-up is retried and the new setting stays.
+    sim.paos_writes.clear(); sim.fail_paos_up=1;
+    assert(hca.set_port_speed(wanted,false)==R::applied);
+    assert(sim.ptys_admin==wanted && !sim.ptys_an_disabled && sim.port_admin==1);
+    assert((sim.paos_writes==std::vector<uint8_t>{2,1,1}));
+    // Two refused port-ups: the old setting goes back and the third up lands.
+    sim.paos_writes.clear(); sim.fail_paos_up=2;
+    assert(hca.set_port_speed(old_admin,true)==R::failed_restored);
+    assert(sim.ptys_admin==wanted && !sim.ptys_an_disabled && sim.port_admin==1);
+    assert((sim.paos_writes==std::vector<uint8_t>{2,1,1,1}));
+    // Every port-up refused: the port is left down and the caller is told so.
+    sim.paos_writes.clear(); sim.fail_paos_up=3;
+    assert(hca.set_port_speed(old_admin,true)==R::recovery_required && sim.port_admin==2);
+    sim.fail_paos_up=0;
+    // Refused while a QP exists, as for the MTU: nothing sent.
     HardwareObject pd; HardwareCQ cq; HardwareQP qp;
     assert(hca.alloc_pd(pd) && hca.create_cq(cq) && hca.create_qp(qp,pd.id,cq,cq));
-    const unsigned before=sim.calls;
-    assert(!hca.set_port_speed(1u<<12,false) && sim.calls==before && sim.ptys_writes==2);
+    const unsigned before=sim.calls, writes=sim.ptys_writes;
+    assert(hca.set_port_speed(1u<<12,false)==R::refused && sim.calls==before && sim.ptys_writes==writes);
     assert(hca.destroy_qp(qp) && hca.destroy_cq(cq) && hca.dealloc_pd(pd));
-    assert(hca.set_port_speed(1u<<12,false) && sim.ptys_writes==3 && !sim.ptys_an_disabled);
+    assert(hca.set_port_speed(1u<<12,false)==R::applied && sim.port_admin==1 && sim.ptys_admin==1u<<12);
     assert(hca.stop() && !sim.buffers);
 }
 void lifecycle() {

@@ -142,7 +142,9 @@ bool Transport::execute(const uint8_t *in,size_t in_bytes,uint8_t *out,size_t ou
             if (cx5::read_be32(in+4)==0) {
                 const uint32_t admin=cx5::read_be32(in+16+24);
                 assert(admin && !(admin&~sim.ptys_capability));
-                sim.ptys_admin=admin; sim.ptys_an_disabled=(in[16]>>6)&1; ++sim.ptys_writes;
+                ++sim.ptys_writes;
+                if (sim.fail_ptys_write) { sim.fail_ptys_write=false; last.completed=1; last.firmware_status=2; return false; }
+                sim.ptys_admin=admin; sim.ptys_an_disabled=(in[16]>>6)&1;
             } else assert(cx5::read_be32(in+4)==1);
             out[16]=uint8_t((sim.ptys_an_disabled?0x40:0)|(sim.ptys_an_disable_cap?0x20:0));
             out[17]=1; out[19]=4; out[20]=uint8_t(sim.ptys_an_status<<4);
@@ -152,7 +154,12 @@ bool Transport::execute(const uint8_t *in,size_t in_bytes,uint8_t *out,size_t ou
         }
         assert(in_bytes==32 && out_bytes==32 && in[17]==1);
         if (cx5::read_be32(in+8)==0x5006) {
-            if (cx5::read_be32(in+4)==0) { assert(in[20]==0x80); sim.paos_writes.push_back(in[18]); }
+            if (cx5::read_be32(in+4)==0) {
+                assert(in[20]==0x80 && (in[18]==1 || in[18]==2)); sim.paos_writes.push_back(in[18]);
+                unsigned &fail=in[18]==2 ? sim.fail_paos_down : sim.fail_paos_up;
+                if (fail) { --fail; last.completed=1; last.firmware_status=2; return false; }
+                sim.port_admin=in[18];
+            }
             if (sim.port_gate) {
                 sim.blocked_command_lock=test_held_locks.back(); sim.port_arrived.set_value();
                 sim.port_continue.get_future().wait();
