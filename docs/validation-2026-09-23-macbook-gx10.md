@@ -158,7 +158,7 @@ What this shows, for this model and these three runs per point:
 
 - The split kept the Mac's decode rate, about 2.7 times this GX10 baseline, and moved prefill to the GX10. At 28,270 tokens its 128-token reply took 21% less time than Mac-only, and at 15,141 tokens 12% less. At 3,830 and 7,600 tokens the configurations were within a few percent of each other.
 - The 1,035-token Mac-only first token (1.55 s, longer than at 3,830 tokens) appeared in two of three Mac-only requests and was not investigated, so the split's apparent lead at that length is not claimed.
-- The M5 Max prefilled 28,270 tokens in about 10.9 s. The [disaggregated-inference note](disaggregated-inference.md) reports 22.32 s for 28,852 tokens on the M3 Ultra Studio, with an MXFP4 checkpoint and summed stage times. The quantisation and the method differ, so this is context, not a matched comparison; it is why the split gains less on this Mac than in that note.
+- The M5 Max prefilled 28,270 tokens in about 10.9 s. The [disaggregated-inference report](disaggregated-inference.md) gives 22.32 s for 28,852 tokens on the M3 Ultra Studio, with an MXFP4 checkpoint and summed stage times. The quantisation and the method differ, so this is context, not a matched comparison; it is why the split gains less on this Mac than in that note.
 - The GX10 decode figures are BF16 in an untuned vLLM configuration and should not be read as the GB10's best decode rate.
 
 ### Tuning the split, 24 September
@@ -174,11 +174,11 @@ On 24 September between 02:27 and 02:37 UTC the split was rerun at 15,137 and 28
 
 With larger prefill chunks the split's reply took 24% less time than the Mac-only 13.90 s. At 15,137 tokens it was 5.88 s against 6.84 s. Turning checksums off shortened the transfer but not the first token in these three runs. Online FP8 weights roughly doubled vLLM's own decode rate (25.0 to 43.9 tok/s over the five lengths) but made the 28k prefill slower, so the split lost time; FP8 accuracy was not evaluated beyond the passphrase check. The remaining transfer, about 1.1 s at 28k, is the part that streaming layers during prefill would hide. That was not attempted.
 
-### Next to the Studio note
+### Next to the Studio + Spark run
 
-The [disaggregated-inference note](disaggregated-inference.md) reports the same kind of split on an M3 Ultra Studio and a DGX Spark. Its numbers are copied below, not re-measured. The setups differ in several ways: its checkpoint was MXFP4 where ours was BF16, its driver was 0.1.17, and its reply times are sums of separately measured stages where ours are end-to-end client times. Its prompt lengths also differ from ours by 2 to 5%. Times are 128-token replies with the first token in brackets; the percentage is how much less time the split took than Mac-only.
+The [disaggregated-inference report](disaggregated-inference.md) reports the same kind of split on an M3 Ultra Studio and a DGX Spark. Its numbers are copied below, not re-measured. The setups differ in several ways: its checkpoint was MXFP4 where ours was BF16, its driver was 0.1.17, and its reply times are sums of separately measured stages where ours are end-to-end client times. Its prompt lengths also differ from ours by 2 to 5%. Times are 128-token replies with the first token in brackets; the percentage is how much less time the split took than Mac-only.
 
-| Prompt, ours / note | Ours: Mac-only, s | Ours: split, s | Ours: less time | Note: Studio-only, s | Note: split, s | Note: less time |
+| Prompt, ours / Studio run | Ours: Mac-only, s | Ours: split, s | Ours: less time | Studio run: Studio-only, s | Studio run: split, s | Studio run: less time |
 |---|---:|---:|---:|---:|---:|---:|
 | 1,035 / 977 | 3.73 (1.55) | 2.44 (0.31) | not claimed (see above) | 1.19 (0.39) | 1.05 (0.20) | 12% (49%) |
 | 3,830 / 3,852 | 2.95 (0.74) | 3.06 (0.88) | -4% (-19%) | 2.50 (1.63) | 1.84 (0.76) | 26% (53%) |
@@ -186,31 +186,31 @@ The [disaggregated-inference note](disaggregated-inference.md) reports the same 
 | 15,141 / 15,402 | 6.84 (4.32) | 5.88 (3.36) | 14% (22%) | 10.03 (8.81) | 5.55 (3.52) | 45% (60%) |
 | 28,270 / 28,852 | 13.90 (10.92) | 10.54 (7.49) | 24% (31%) | 23.94 (22.32) | 11.21 (8.08) | 53% (64%) |
 
-The two lower rows of our split use the 16k prefill chunks from the tuning runs; the others use vLLM's default. In absolute time the two splits were close: 10.54 s and 11.21 s at the longest prompt. The percentages differ mainly because of the Mac-only baseline. The M5 Max prefilled about twice as fast as the note's M3 Ultra, which leaves the remote prefill less to save.
+The two lower rows of our split use the 16k prefill chunks from the tuning runs; the others use vLLM's default. In absolute time the two splits were close: 10.54 s and 11.21 s at the longest prompt. The percentages differ mainly because of the Mac-only baseline. The M5 Max prefilled about twice as fast as the Studio run's M3 Ultra, which leaves the remote prefill less to save.
 
 The same runs as rates. Effective prefill is prompt tokens divided by the time to the first token, so for the splits it includes the handoff. Decode is the streamed rate after the first token, which the split does not change. Prefill rates are rounded to the nearest token per second.
 
-| Prompt, ours / note | Ours: Mac-only prefill, tok/s | Ours: split prefill, tok/s | Note: Studio-only prefill, tok/s | Note: split prefill, tok/s | Ours: Mac / GX10 decode, tok/s | Note: Studio / Spark decode, tok/s |
+| Prompt, ours / Studio run | Ours: Mac-only prefill, tok/s | Ours: split prefill, tok/s | Studio run: Studio-only prefill, tok/s | Studio run: split prefill, tok/s | Ours: Mac / GX10 decode, tok/s | Studio run: Studio / Spark decode, tok/s |
 |---|---:|---:|---:|---:|---:|---:|
 | 3,830 / 3,852 | 5,176 | 4,352 | 2,363 | 5,068 | 57.6 / 21.1 | 147 / 60 |
 | 7,600 / 7,702 | 4,606 | 4,524 | 2,128 | 4,937 | 55.3 / 20.0 | 131 / 53 |
 | 15,141 / 15,402 | 3,505 | 4,506 | 1,748 | 4,376 | 50.4 / 18.3 | 109 / 42 |
 | 28,270 / 28,852 | 2,589 | 3,774 | 1,293 | 3,571 | 42.7 / 15.9 | 83 / 31 |
 
-The note's decode rates are for an MXFP4 checkpoint and ours for BF16, which reads about four times as many weight bytes per token. The decode columns therefore compare the two setups as run, not the machines.
+The Studio run's decode rates are for an MXFP4 checkpoint and ours for BF16, which reads about four times as many weight bytes per token. The decode columns therefore compare the two setups as run, not the machines.
 
 ### MXFP4 on the Mac
 
-The note's model was MXFP4, and at the same quantisation the decode rates can be compared directly. On 24 September (02:51 to 02:57 UTC) the Mac's copy of the model was converted with mlx-lm 0.32.0 (`mlx_lm convert -q --q-mode mxfp4 --q-group-size 32 --q-bits 4`, 4.25 bits per weight). The GX10 kept prefilling in BF16 with 16k chunks, because the note's matching compressed-tensors converter is not published. The split therefore decodes an MXFP4 model from a cache that a BF16 model computed, which is a different computation from the note's all-MXFP4 run. All 15 measured split requests, and the 2 warmups before them, logged a completed handoff with no failures. Medians of three, 128-token replies; best value per row in bold:
+The Studio run's model was MXFP4, and at the same quantisation the decode rates can be compared directly. On 24 September (02:51 to 02:57 UTC) the Mac's copy of the model was converted with mlx-lm 0.32.0 (`mlx_lm convert -q --q-mode mxfp4 --q-group-size 32 --q-bits 4`, 4.25 bits per weight). The GX10 kept prefilling in BF16 with 16k chunks, because the Studio run's matching compressed-tensors converter is not published. The split therefore decodes an MXFP4 model from a cache that a BF16 model computed, which is a different computation from the Studio run's all-MXFP4 run. All 15 measured split requests, and the 2 warmups before them, logged a completed handoff with no failures. Medians of three, 128-token replies; best value per row in bold:
 
-| Prompt, ours / note | Prefill tok/s: ours Mac-only / ours split / note Studio-only / note split | Decode tok/s: ours Mac / note Studio | Output tok/s over the whole reply: ours Mac-only / ours split / note Studio-only / note split |
+| Prompt, ours / Studio run | Prefill tok/s: ours Mac-only / ours split / Studio-only / Studio + Spark split | Decode tok/s: ours Mac / Studio | Output tok/s over the whole reply: ours Mac-only / ours split / Studio-only / Studio + Spark split |
 |---|---|---|---|
 | 3,831 / 3,852 | 4,893 / 4,362 / 2,363 / **5,068** | **155.1** / 147 | **79.9** / 75.8 / 51.2 / 69.6 |
 | 7,600 / 7,702 | 4,353 / 4,811 / 2,128 / **4,937** | **133.3** / 131 | 47.4 / **50.5** / 27.7 / 43.1 |
 | 15,140 / 15,402 | 3,409 / **4,454** / 1,748 / 4,376 | 106.1 / **109** | 22.7 / **27.6** / 12.8 / 23.1 |
 | 28,270 / 28,852 | 2,652 / **3,735** / 1,293 / 3,571 | 76.5 / **83** | 9.9 / **13.9** / 5.3 / 11.4 |
 
-At the same quantisation the M5 Max decoded within about 8% of the M3 Ultra at every length, so the BF16 gap above was the weights. At 28,270 tokens the split's reply took 9.24 s against 12.90 s Mac-only (28% less time). The note's split took 11.21 s at 28,852 tokens. 28 of 30 answers were correct. The two misses were a digit off in the passphrase, one in each configuration. Replaying both prompts in both configurations, with oMLX's prefix cache moved aside, reproduced the misses in all four runs, with the same wrong passphrase at 28k in both. The misses are therefore the 4-bit model on those two prompts, not the handoff. The 1,035-token rows are omitted here for the same reason as above.
+At the same quantisation the M5 Max decoded within about 8% of the M3 Ultra at every length, so the BF16 gap above was the weights. At 28,270 tokens the split's reply took 9.24 s against 12.90 s Mac-only (28% less time). The Studio run's split took 11.21 s at 28,852 tokens. 28 of 30 answers were correct. The two misses were a digit off in the passphrase, one in each configuration. Replaying both prompts in both configurations, with oMLX's prefix cache moved aside, reproduced the misses in all four runs, with the same wrong passphrase at 28k in both. The misses are therefore the 4-bit model on those two prompts, not the handoff. The 1,035-token rows are omitted here for the same reason as above.
 
 ### What changed from the untuned run
 
