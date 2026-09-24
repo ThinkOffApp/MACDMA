@@ -167,10 +167,10 @@ On 24 September between 02:27 and 02:37 UTC the split was rerun at 15,137 and 28
 
 | 28,267-token prompt | First token, s | 128-token reply, s | GX10 prefill, s (oMLX log) | Transfer, s |
 |---|---:|---:|---:|---:|
-| Split as above (vLLM default `max_num_batched_tokens` 2048) | 7.99 | 10.93 | 6.31 to 6.70 | 1.24 to 1.28 |
+| Split as above (vLLM default `max_num_batched_tokens` 2048) | 7.99 | 10.93 | 6.30 to 6.70 | 1.18 to 1.28 |
 | `--max-num-batched-tokens 16384` | 7.49 | 10.54 | 5.95 to 6.01 | 1.11 to 1.14 |
 | 16384, checksums off | 7.48 | 10.42 | 6.18 to 6.23 | 0.87 to 0.88 |
-| 16384, `--quantization fp8` on vLLM | 8.24 | 11.20 | 6.66 | 1.22 to 1.25 |
+| 16384, `--quantization fp8` on vLLM | 8.24 | 11.20 | 6.65 to 6.66 | 1.22 to 1.25 |
 
 With larger prefill chunks the split's reply took 24% less time than the Mac-only 13.90 s. At 15,137 tokens it was 5.88 s against 6.84 s. Turning checksums off shortened the transfer but not the first token in these three runs. Online FP8 weights roughly doubled vLLM's own decode rate (25.0 to 43.9 tok/s over the five lengths) but made the 28k prefill slower, so the split lost time; FP8 accuracy was not evaluated beyond the passphrase check. The remaining transfer, about 1.1 s at 28k, is the part that streaming layers during prefill would hide. That was not attempted.
 
