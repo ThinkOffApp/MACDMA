@@ -199,7 +199,6 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(table.take_finished(), {'req-9'})
 
 
-@unittest.skipUnless(shutil.which('cc'), 'C compiler required')
 class ChecksumTests(unittest.TestCase):
     """The responder prefers python-isal's CRC-32 and falls back to zlib's; both must match the wire format."""
 
@@ -257,6 +256,7 @@ class ChecksumTests(unittest.TestCase):
         self.assertEqual(module._crc32(b'123456789'), 0xcbf43926)
 
 
+@unittest.skipUnless(shutil.which('cc'), 'C compiler required')
 class MailboxTests(unittest.TestCase):
     """The real mailbox class over a file mailbox, with a stand-in daemon socket."""
 
