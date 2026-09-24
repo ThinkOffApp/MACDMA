@@ -1,6 +1,6 @@
 # 0.1.18 on a MacBook Pro and an ASUS GX10, 23 September 2026
 
-Contributed report, not a maintainer measurement. It repeats the correctness checks from the [installation guide](install.md#5-verify-rdma-before-using-it), the README latency command, and the bandwidth recipe from the [17 September report](validation-2026-09-17.md#reproducing-the-bandwidth-shape) on a different Mac and a different GB10 peer. Everything below was measured on one link, on one boot of each machine, on 23 September 2026 between 19:03 and 19:24 UTC. The Mac booted at 18:59:06 UTC.
+Contributed report, not a maintainer measurement. It repeats the correctness checks from the [installation guide](install.md#5-verify-rdma-before-using-it), the README latency command, and the bandwidth recipe from the [17 September report](validation-2026-09-17.md#reproducing-the-bandwidth-shape) on a different Mac and a different GB10 peer. The transport tests below (correctness, latency, bandwidth) were measured on one link, on one boot of each machine, on 23 September 2026 between 19:03 and 19:24 UTC; the Mac booted at 18:59:06 UTC. The model runs were measured later on the same link, with their own times given in each section.
 
 ## Test setup
 
