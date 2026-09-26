@@ -42,7 +42,7 @@ python3 benchmarks/run_bw.py --mac-platform linux \
 Drop `--dry-run` to run it. `--mac-provider`, `--mac-checker` and the
 `--mac-cq-map`, `--mac-user-post` and `--mac-user-bf` modes do not apply and
 are rejected. The command runs with no `env IBV_DRIVERS` or `MCDMA_*` prefix,
-and `--mac-gid-index` defaults to 1. Preflight gives both hosts the same
+and both `--mac-gid-index` and `--peer-gid-index` are required. Preflight gives both hosts the same
 check: the GID index must be RoCE v2 on the named interface, and binaries are
 hashed with `sha256sum`. The manifest records `mac_platform`, and a
 `MCDMA_*` provider marker on the first host fails the run.

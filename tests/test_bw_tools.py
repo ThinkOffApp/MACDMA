@@ -146,7 +146,7 @@ class SweepTests(unittest.TestCase):
 LINUX_ARGS = ['--mac-platform', 'linux', '--mac-host', 'linux-a', '--peer-host', 'linux-b',
               '--mac-bw', '/opt/test/mcdma-bw-a', '--peer-bw', '/opt/test/mcdma-bw-b',
               '--mac-interface', 'enp8s0', '--peer-interface', 'enp9s0', '--mac-device', 'rocep8s0',
-              '--peer-device', 'rocep9s0']
+              '--peer-device', 'rocep9s0', '--mac-gid-index', '1', '--peer-gid-index', '1']
 # Pre-change output of MACOS_ARGV --dry-run, recorded before --mac-platform existed.
 MACOS_ARGV = BASE_ARGS + ['--ops', 'write,read', '--sizes', '4096', '--depths', '1,4', '--mac-cq-map', '2',
                           '--mac-user-post', '1', '--mac-user-bf', '64', '--output', '/nonexistent/x', '--dry-run']
@@ -185,14 +185,25 @@ class LinuxPlatformTests(unittest.TestCase):
         self.assertIn("linux-b '/opt/test/mcdma-bw-b --role responder --device rocep9s0 --gid-index 1 ", lines[1])
 
     def test_linux_does_not_require_provider_or_checker(self):
-        code, _ = dry_run(LINUX_ARGS + ['--mac-gid-index', '3', '--output', '/nonexistent/test-output', '--dry-run'])
+        code, output = dry_run(LINUX_ARGS[:-4] + ['--mac-gid-index', '3', '--peer-gid-index', '5',
+                                                  '--output', '/nonexistent/test-output', '--dry-run'])
         self.assertEqual(code, 0)
+        self.assertIn('--device rocep8s0 --gid-index 3 ', output)
+        self.assertIn('--device rocep9s0 --gid-index 5 ', output)
         for extra in (['--mac-provider', '/opt/test/libmcdma-rdmav34.so'], ['--mac-checker', '/opt/test/check']):
             with self.subTest(extra=extra), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
                 run_bw.main(LINUX_ARGS + extra + ['--output', '/nonexistent/test-output', '--dry-run'])
         macos = [a for a in BASE_ARGS if a not in ('--mac-checker', '/opt/test/cx5-native-check')]
         with patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
             run_bw.main(macos + ['--output', '/nonexistent/test-output', '--dry-run'])
+
+    def test_linux_requires_both_gid_indexes(self):
+        bare = LINUX_ARGS[:-4]
+        for extra in ([], ['--mac-gid-index', '3'], ['--peer-gid-index', '5']):
+            stderr = io.StringIO()
+            with self.subTest(extra=extra), patch('sys.stderr', stderr), self.assertRaises(SystemExit):
+                run_bw.main(bare + extra + ['--output', '/nonexistent/test-output', '--dry-run'])
+            self.assertIn('::ffff:<port IPv4>', stderr.getvalue())
 
     def test_linux_rejects_mac_provider_modes(self):
         for extra in (['--mac-cq-map', '2'], ['--mac-cq-map', '1'], ['--mac-cq-map', '2', '--mac-user-post', '1'],

@@ -316,8 +316,8 @@ def main(argv=None):
                         help='first host OS; linux runs stock rdma-core with no MCDMA provider or checker')
     parser.add_argument('--mac-provider', help='required with --mac-platform macos')
     parser.add_argument('--mac-checker', help='required with --mac-platform macos')
-    parser.add_argument('--mac-gid-index', type=int, help='default 0 on macos, 1 on linux')
-    parser.add_argument('--peer-gid-index', type=int, default=1)
+    parser.add_argument('--mac-gid-index', type=int, help='default 0 on macos; required on linux')
+    parser.add_argument('--peer-gid-index', type=int, help='default 1 on macos; required on linux')
     parser.add_argument('--ops', type=lambda t: parse_list(t, 'op', allowed=OPS), default=list(OPS))
     parser.add_argument('--sizes', type=lambda t: parse_list(t, 'size', low=4096, high=16 << 20),
                         default=[4096, 65536, 1 << 20, 16 << 20], help='bytes per request, 4096..16777216')
@@ -348,8 +348,13 @@ def main(argv=None):
             parser.error('--mac-cq-map, --mac-user-post and --mac-user-bf require --mac-platform macos')
     elif not (args.mac_provider and args.mac_checker):
         parser.error('--mac-platform macos requires --mac-provider and --mac-checker')
+    if linux and (args.mac_gid_index is None or args.peer_gid_index is None):
+        parser.error('--mac-platform linux requires --mac-gid-index and --peer-gid-index: pick the RoCE v2 entry '
+                     'whose GID is ::ffff:<port IPv4> (or the link-local RoCE v2 entry)')
     if args.mac_gid_index is None:
-        args.mac_gid_index = 1 if linux else 0
+        args.mac_gid_index = 0
+    if args.peer_gid_index is None:
+        args.peer_gid_index = 1
     if args.mac_user_post == '1' and args.mac_cq_map != '2':
         parser.error('--mac-user-post 1 requires --mac-cq-map 2')
     if args.mac_user_bf != '0' and args.mac_user_post != '1':
