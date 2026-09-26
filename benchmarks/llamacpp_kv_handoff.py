@@ -21,8 +21,9 @@ Both servers must run the same GGUF with the same context size, one slot
 host, path and address is an argument; SSH carries control only.
 
 mcdma-bw moves at most 16 MiB x 64 slots per payload run, so larger slot
-files go in chunks, each a separate run with its own setup. This is a
-measurement tool, not the persistent-link transport (see link-daemon.md).
+files go in chunks, each a separate run with its own setup. The `link` arm
+(--arms ...,link) instead pulls the file over a running mcdma-rpcd link with
+benchmarks/rpc_file.py: no per-transfer setup (see link-daemon.md).
 """
 import argparse
 import csv
@@ -197,6 +198,19 @@ def rdma_transfer(args, src, dst, name, size, outdir):
     return total, len(plan)
 
 
+def link_transfer(args, dst, name):
+    """Pull the slot file over a running mcdma-rpcd link (rpc_file.py serve on
+    the producer, connect daemon on the consumer). Wire seconds are the
+    consumer's pull loop; the wall clock adds one SSH round trip."""
+    cmd = (f'MCDMA_RPC_LIBRARY={shlex.quote(args.dst_rpc_lib)} python3 '
+           f'{shlex.quote(args.dst_repo)}/benchmarks/rpc_file.py pull {shlex.quote(args.link_name)} '
+           f'{shlex.quote(name)} {shlex.quote(dst.path(name))}')
+    out = dst.sh(cmd)
+    if dst.dry:
+        return 0.0
+    return float(json.loads(out.strip().splitlines()[-1])['seconds'])
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     for side in ('src', 'dst'):
@@ -214,11 +228,20 @@ def main(argv=None):
     p.add_argument('--n-predict', type=int, default=64)
     p.add_argument('--request', type=int, default=MAX_REQUEST, help='RDMA request bytes (<= 16 MiB)')
     p.add_argument('--mtu', type=int, choices=[1024, 2048, 4096], default=1024)
+    p.add_argument('--arms', default='rdma,tcp', help='any of rdma (mcdma-bw payload runs), tcp, link (mcdma-rpcd)')
+    p.add_argument('--link-name', help='mcdma-rpcd link for the link arm; the producer runs rpc_file.py serve on it')
+    p.add_argument('--dst-repo', help="this repository's checkout on the consumer, for the link arm")
+    p.add_argument('--dst-rpc-lib', help='libmcdma-rpc.so on the consumer, for the link arm')
     p.add_argument('--output', type=Path, required=True, help='new directory for results.json and chunk logs')
     p.add_argument('--dry-run', action='store_true')
     args = p.parse_args(argv)
     if not 4096 <= args.request <= MAX_REQUEST:
         p.error('--request must be 4 KiB to 16 MiB')
+    arms = args.arms.split(',')
+    if not arms or set(arms) - {'rdma', 'tcp', 'link'}:
+        p.error('--arms takes rdma, tcp and link')
+    if 'link' in arms and not (args.link_name and args.dst_repo and args.dst_rpc_lib):
+        p.error('the link arm needs --link-name, --dst-repo and --dst-rpc-lib')
     src = Host(args.src_host, args.src_port, args.src_slot_dir, args.dry_run)
     dst = Host(args.dst_host, args.dst_port, args.dst_slot_dir, args.dry_run)
     if not args.dry_run:
@@ -253,12 +276,14 @@ def main(argv=None):
             run['save_ms'] = save.get('timings', {}).get('save_ms')
             run['slot_bytes'] = size = src.size(name) if not args.dry_run else 3 << 30
             want = src.sha256(name)
-            order = ['rdma', 'tcp'] if r % 2 == 0 else ['tcp', 'rdma']
+            order = arms[r % len(arms):] + arms[:r % len(arms)]   # rotate so no arm always goes first
             for arm in order:
                 dst.sh(f'rm -f {shlex.quote(dst.path(name))}')
                 t0 = time.perf_counter()
                 if arm == 'rdma':
                     wire, chunks = rdma_transfer(args, src, dst, name, size, args.output / f'n{n}-r{r}-rdma')
+                elif arm == 'link':
+                    wire, chunks = link_transfer(args, dst, name), 1
                 else:
                     moved, wire = tcp_transfer(src, dst, name, args.dst_ip, args.tcp_port)
                     chunks = 1

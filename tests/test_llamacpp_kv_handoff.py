@@ -78,5 +78,28 @@ class Misc(unittest.TestCase):
         self.assertIn('create_connection(("192.0.2.2",18777))', text)
 
 
+class LinkArm(unittest.TestCase):
+    def _argv(self, *extra):
+        argv = ['--dry-run', '--output', '/nonexistent/x', '--dst-ip', '192.0.2.2', '--prompts', '2048',
+                '--rounds', '1', *extra]
+        for side in ('src', 'dst'):
+            argv += [f'--{side}-host', f'{side}-host', f'--{side}-slot-dir', '/dev/shm/kv', f'--{side}-bw', '/opt/bw',
+                     f'--{side}-interface', 'eth9', f'--{side}-device', 'rdma9', f'--{side}-gid-index', '3']
+        return argv
+
+    def test_link_arm_pulls_with_rpc_file(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            kvh.main(self._argv('--arms', 'link,tcp', '--link-name', 'kv0', '--dst-repo', '/opt/mcdma',
+                                '--dst-rpc-lib', '/opt/lib.so'))
+        text = out.getvalue()
+        self.assertIn('/opt/mcdma/benchmarks/rpc_file.py pull kv0 kvh-2048.bin /dev/shm/kv/kvh-2048.bin', text)
+        self.assertNotIn('run_bw.py', text)
+
+    def test_link_arm_requires_its_settings(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            kvh.main(self._argv('--arms', 'link'))
+
+
 if __name__ == '__main__':
     unittest.main()

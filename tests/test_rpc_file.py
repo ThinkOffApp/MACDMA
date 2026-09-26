@@ -1,0 +1,103 @@
+"""Offline checks for benchmarks/rpc_file.py: a thread plays connect daemon
+plus the remote file service (rpc_file.handle) on one mapped mailbox, so a
+multi-frame pull, error replies and name confinement run without hardware."""
+import ctypes
+import hashlib
+import importlib.util
+import mmap
+import os
+from pathlib import Path
+import struct
+import sys
+import tempfile
+import threading
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'benchmarks'))
+spec = importlib.util.spec_from_file_location('rf', ROOT / 'benchmarks/rpc_file.py')
+rf = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rf)
+sys.path.insert(0, str(ROOT / 'tests'))
+from test_rpc_roundtrip import FakeHelper  # noqa: E402
+
+HALF = 1 << 20
+
+
+class FileLink(threading.Thread):
+    def __init__(self, box_path, root, flip=False):
+        super().__init__(daemon=True)
+        self.box_path, self.root, self.flip = box_path, root, flip
+        self.stop = threading.Event()
+
+    def run(self):
+        fd = os.open(self.box_path, os.O_RDWR)
+        m = mmap.mmap(fd, os.fstat(fd).st_size)
+        os.close(fd)
+        view = memoryview(m)
+        base = ctypes.addressof(ctypes.c_char.from_buffer(m))
+        last = 0
+        while not self.stop.is_set():
+            w = ctypes.c_uint64.from_address(base).value
+            if not w or (w >> 32) == last:
+                continue
+            last = w >> 32
+            payload = bytes(view[rf.CTRL:rf.CTRL + (w & 0xFFFFFFFF)])
+            area = view[HALF + rf.CTRL:2 * HALF]
+            n = rf.handle(self.root, payload, area, len(area))
+            if self.flip and n > 8:
+                area[n - 1] ^= 1
+            ctypes.c_uint64.from_address(base + HALF + 64).value = last << 32 | n
+
+
+class Pull(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.box = self.root / 'box'
+        with open(self.box, 'wb') as f:
+            f.truncate(2 * HALF)
+        with open(self.box, 'r+b') as f:
+            f.seek(rf.CTRL - rf.CTRL + 256)
+            f.write(struct.pack('<QQ', HALF, HALF))
+            f.seek(64)
+            f.write(struct.pack('<Q', 1))
+        self.served = self.root / 'served'
+        self.served.mkdir()
+        self.data = os.urandom(3 * HALF + 12345)   # four frames, the last one short
+        (self.served / 'kvh-8192.bin').write_bytes(self.data)
+        (self.root / 'secret').write_bytes(b'nope')
+
+    def _client(self, **kw):
+        link = FileLink(str(self.box), self.served.resolve(), **kw)
+        link.start()
+        self.addCleanup(link.stop.set)
+        c = rf.Client('x', helper=FakeHelper(), mailbox_path=str(self.box))
+        self.addCleanup(c.close)
+        return c
+
+    def test_multi_frame_pull_is_exact(self):
+        dest = self.root / 'out.bin'
+        r = rf.pull(self._client(), 'kvh-8192.bin', dest)
+        self.assertEqual(r['bytes'], len(self.data))
+        self.assertEqual(hashlib.sha256(dest.read_bytes()).digest(), hashlib.sha256(self.data).digest())
+
+    def test_corruption_shows_in_the_hash(self):
+        dest = self.root / 'out.bin'
+        rf.pull(self._client(flip=True), 'kvh-8192.bin', dest)
+        self.assertNotEqual(dest.read_bytes(), self.data)
+
+    def test_missing_file_refused(self):
+        with self.assertRaises(SystemExit):
+            rf.pull(self._client(), 'absent.bin', self.root / 'o')
+
+    def test_names_cannot_leave_the_directory(self):
+        for name in ('../secret', '/etc/passwd', '.hidden', '..'):
+            self.assertFalse(rf._name_ok(name), name)
+        with self.assertRaises(SystemExit):
+            rf.pull(self._client(), '../secret', self.root / 'o')
+
+
+if __name__ == '__main__':
+    unittest.main()
