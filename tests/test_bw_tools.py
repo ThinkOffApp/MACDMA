@@ -141,6 +141,132 @@ class SweepTests(unittest.TestCase):
             run_bw.mac_mode_markers(consume + posting + bf, '2', '1', '64', 1, 2)
 
 
+
+# Two Linux hosts: the first host runs stock rdma-core, so no provider or checker.
+LINUX_ARGS = ['--mac-platform', 'linux', '--mac-host', 'linux-a', '--peer-host', 'linux-b',
+              '--mac-bw', '/opt/test/mcdma-bw-a', '--peer-bw', '/opt/test/mcdma-bw-b',
+              '--mac-interface', 'enp8s0', '--peer-interface', 'enp9s0', '--mac-device', 'rocep8s0',
+              '--peer-device', 'rocep9s0']
+# Pre-change output of MACOS_ARGV --dry-run, recorded before --mac-platform existed.
+MACOS_ARGV = BASE_ARGS + ['--ops', 'write,read', '--sizes', '4096', '--depths', '1,4', '--mac-cq-map', '2',
+                          '--mac-user-post', '1', '--mac-user-bf', '64', '--output', '/nonexistent/x', '--dry-run']
+MACOS_DRY_RUN_SHA256 = 'cf7333d9e990e8dcabb385672f6d8e41082a6d04f4c076058535448a81afaae0'
+
+
+def dry_run(argv):
+    buffer = io.StringIO()
+    with patch.object(run_bw.subprocess, 'run') as run, patch.object(run_bw.subprocess, 'Popen') as popen, \
+            patch('sys.stdout', buffer):
+        code = run_bw.main(argv)
+    run.assert_not_called()
+    popen.assert_not_called()
+    return code, buffer.getvalue()
+
+
+class LinuxPlatformTests(unittest.TestCase):
+    def test_macos_dry_run_is_unchanged(self):
+        code, output = dry_run(MACOS_ARGV)
+        self.assertEqual(code, 0)
+        self.assertEqual(run_bw.hashlib.sha256(output.encode()).hexdigest(), MACOS_DRY_RUN_SHA256)
+        code, explicit = dry_run(['--mac-platform', 'macos'] + MACOS_ARGV)
+        self.assertEqual((code, explicit), (0, output))
+
+    def test_linux_dry_run_has_no_env_prefix(self):
+        code, output = dry_run(LINUX_ARGS + ['--ops', 'write', '--sizes', '4096', '--depths', '1',
+                                             '--output', '/nonexistent/test-output', '--dry-run'])
+        self.assertEqual(code, 0)
+        lines = [line for line in output.splitlines() if line.startswith('ssh ')]
+        self.assertEqual(len(lines), 2 * 2 * 3)
+        for line in lines:
+            self.assertNotIn('env ', line)
+            self.assertNotIn('IBV_DRIVERS', line)
+            self.assertNotIn('MCDMA_', line)
+        self.assertIn("linux-a '/opt/test/mcdma-bw-a --role initiator --device rocep8s0 --gid-index 1 ", lines[0])
+        self.assertIn("linux-b '/opt/test/mcdma-bw-b --role responder --device rocep9s0 --gid-index 1 ", lines[1])
+
+    def test_linux_does_not_require_provider_or_checker(self):
+        code, _ = dry_run(LINUX_ARGS + ['--mac-gid-index', '3', '--output', '/nonexistent/test-output', '--dry-run'])
+        self.assertEqual(code, 0)
+        for extra in (['--mac-provider', '/opt/test/libmcdma-rdmav34.so'], ['--mac-checker', '/opt/test/check']):
+            with self.subTest(extra=extra), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+                run_bw.main(LINUX_ARGS + extra + ['--output', '/nonexistent/test-output', '--dry-run'])
+        macos = [a for a in BASE_ARGS if a not in ('--mac-checker', '/opt/test/cx5-native-check')]
+        with patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            run_bw.main(macos + ['--output', '/nonexistent/test-output', '--dry-run'])
+
+    def test_linux_rejects_mac_provider_modes(self):
+        for extra in (['--mac-cq-map', '2'], ['--mac-cq-map', '1'], ['--mac-cq-map', '2', '--mac-user-post', '1'],
+                      ['--mac-cq-map', '2', '--mac-user-post', '1', '--mac-user-bf', '64']):
+            with self.subTest(extra=extra), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+                run_bw.main(LINUX_ARGS + extra + ['--output', '/nonexistent/test-output', '--dry-run'])
+        code, _ = dry_run(LINUX_ARGS + ['--mac-cq-map', '0', '--mac-user-post', '0', '--mac-user-bf', '0',
+                                        '--output', '/nonexistent/test-output', '--dry-run'])
+        self.assertEqual(code, 0)
+
+    def test_linux_mode_markers(self):
+        run_bw.linux_mode_markers('')
+        run_bw.linux_mode_markers('libibverbs: warning\n')
+        with self.assertRaises(ValueError):
+            run_bw.linux_mode_markers('MCDMA_CQ_OBSERVER mapped=0 reason=disabled\n')
+
+    def test_linux_neighbour_check_runs_ip_on_the_named_host(self):
+        seen = []
+
+        def run(host, command):
+            seen.append((host, command))
+            return 'fe80::ff:fe00:a lladdr 02:00:00:00:00:0A PERMANENT'
+
+        self.assertTrue(run_bw.linux_has_neighbour(run, 'linux-a', 'fe80::ff:fe00:a', 'enp8s0', '02:00:00:00:00:0a'))
+        self.assertFalse(run_bw.linux_has_neighbour(run, 'linux-a', 'fe80::ff:fe00:a', 'enp8s0', '02:00:00:00:00:0b'))
+        self.assertEqual(seen[0], ('linux-a', ['ip', '-6', 'neigh', 'show', 'to', 'fe80::ff:fe00:a', 'dev', 'enp8s0']))
+
+    def test_linux_preflight_uses_linux_checks_on_both_hosts(self):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            host, remote = command[-2], command[-1]
+            if remote.startswith('cat ') and '/types/' in remote:
+                out = 'RoCE v2\n'
+            elif remote.startswith('cat ') and '/ndevs/' in remote:
+                out = ('enp8s0' if host == 'linux-a' else 'enp9s0') + '\n'
+            elif remote.startswith('sha256sum '):
+                out = 'a' * 64 + '  ' + remote.split()[-1] + '\n'
+            else:
+                out = ''
+            return run_bw.subprocess.CompletedProcess(command, 0, out, '')
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'sweep'
+            with patch.object(run_bw.subprocess, 'run', side_effect=fake_run), \
+                    patch.object(run_bw.cross.subprocess, 'Popen', side_effect=OSError('no ssh in tests')), \
+                    patch('sys.stdout', io.StringIO()):
+                code = run_bw.main(LINUX_ARGS + ['--ops', 'write', '--sizes', '4096', '--depths', '1',
+                                                 '--initiators', 'mac', '--repeats', '1', '--output', str(output)])
+            manifest = run_bw.json.loads((output / 'manifest.json').read_text())
+        self.assertEqual(code, 1)
+        self.assertEqual(manifest['arguments']['mac_platform'], 'linux')
+        self.assertEqual(set(manifest['binaries']), {'mac', 'peer'})
+        remotes = [command[-1] for command in calls]
+        self.assertIn('cat /sys/class/infiniband/rocep8s0/ports/1/gid_attrs/types/1', remotes)
+        self.assertIn('cat /sys/class/infiniband/rocep9s0/ports/1/gid_attrs/types/1', remotes)
+        self.assertIn('sha256sum /opt/test/mcdma-bw-a', remotes)
+        self.assertFalse(any(r.startswith(('shasum', 'ndp', '/opt/test/cx5')) for r in remotes))
+        self.assertTrue(all(error.startswith('no ssh') for error in manifest['runs'][0]['errors']))
+
+    def test_linux_preflight_rejects_roce_v1_first_host(self):
+        def fake_run(command, **kwargs):
+            out = 'IB/RoCE v1\n' if command[-2] == 'linux-a' and '/types/' in command[-1] else 'RoCE v2\n'
+            return run_bw.subprocess.CompletedProcess(command, 0, out, '')
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'sweep'
+            with patch.object(run_bw.subprocess, 'run', side_effect=fake_run), patch('sys.stderr', io.StringIO()):
+                code = run_bw.main(LINUX_ARGS + ['--output', str(output)])
+            manifest = run_bw.json.loads((output / 'manifest.json').read_text())
+        self.assertEqual(code, 1)
+        self.assertIn('not RoCE v2', manifest['errors'][0])
+
 FAKE_ENDPOINT = r'''
 import sys
 role, gid = sys.argv[1], sys.argv[2]
