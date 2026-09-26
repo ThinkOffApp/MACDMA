@@ -20,6 +20,7 @@ rf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rf)
 sys.path.insert(0, str(ROOT / 'tests'))
 from test_rpc_roundtrip import FakeHelper  # noqa: E402
+CTRL = 4096
 
 HALF = 1 << 20
 
@@ -42,8 +43,8 @@ class FileLink(threading.Thread):
             if not w or (w >> 32) == last:
                 continue
             last = w >> 32
-            payload = bytes(view[rf.CTRL:rf.CTRL + (w & 0xFFFFFFFF)])
-            area = view[HALF + rf.CTRL:2 * HALF]
+            payload = bytes(view[CTRL:CTRL + (w & 0xFFFFFFFF)])
+            area = view[HALF + CTRL:2 * HALF]
             n = rf.handle(self.root, payload, area, len(area))
             if self.flip and n > 8:
                 area[n - 1] ^= 1
@@ -59,7 +60,7 @@ class Pull(unittest.TestCase):
         with open(self.box, 'wb') as f:
             f.truncate(2 * HALF)
         with open(self.box, 'r+b') as f:
-            f.seek(rf.CTRL - rf.CTRL + 256)
+            f.seek(256)
             f.write(struct.pack('<QQ', HALF, HALF))
             f.seek(64)
             f.write(struct.pack('<Q', 1))
@@ -106,6 +107,25 @@ class Pull(unittest.TestCase):
             rf._pull_range(c, 'kvh-8192.bin', os.open(self.root / 'o3', os.O_WRONLY | os.O_CREAT), 100, 5000, errors)
             if errors:
                 raise SystemExit(str(errors[0]))
+
+    def test_file_ending_in_ff_bytes_is_not_an_error(self):
+        # The old in-band marker was four 0xff bytes; a file may end in them.
+        data = os.urandom(HALF) + b'\xff\xff\xff\xff'
+        (self.served / 'ff.bin').write_bytes(data)
+        dest = self.root / 'ff.out'
+        rf.pull(self._client(), 'ff.bin', dest)
+        self.assertEqual(dest.read_bytes(), data)
+
+    def test_symlink_and_fifo_are_refused(self):
+        os.symlink(self.root / 'secret', self.served / 'link.bin')
+        os.mkfifo(self.served / 'pipe.bin')
+        for name in ('link.bin', 'pipe.bin'):
+            with self.assertRaises(SystemExit, msg=name):
+                rf.pull(self._client(), name, self.root / 'o')
+
+    def test_duplicate_link_names_refused(self):
+        with self.assertRaisesRegex(SystemExit, 'once'):
+            rf.main(['pull', 'rt0,rt0', 'x.bin', str(self.root / 'o')])
 
     def test_corruption_shows_in_the_hash(self):
         dest = self.root / 'out.bin'

@@ -14,43 +14,61 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 import struct
 import sys
 import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rpc_roundtrip import CTRL, Client, ServiceMailbox  # noqa: E402
+from rpc_roundtrip import Client, ServiceMailbox  # noqa: E402
 
 REQ = struct.Struct('<BQI')      # op, offset, length; the file name follows
 STAT, READ = 1, 2
-ERR = 0xFFFFFFFF                 # reply length on error is 4: this marker
+# An empty reply is the error signal: STAT always answers 8 bytes and the
+# client only READs inside the file, so a valid answer is never empty.
 
 
 def _name_ok(name):
     return name and '/' not in name and name not in ('.', '..') and not name.startswith('.')
 
 
+def _open_regular(path):
+    """Open `path` read-only as a regular file: no symlinks, and no FIFO or
+    device that could block or misbehave (anyone who can write the mailbox
+    chooses the name)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('not a regular file')
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def handle(root, payload, area, max_reply):
-    """Answer one request into `area`; returns the reply length."""
+    """Answer one request into `area`; returns the reply length, 0 on error."""
     try:
         op, offset, length = REQ.unpack_from(payload)
         fname = bytes(payload[REQ.size:]).decode()
         if not _name_ok(fname):
             raise ValueError('bad name')
-        path = root / fname
-        if op == STAT:
-            area[:8] = struct.pack('<Q', path.stat().st_size)
-            return 8
-        if op == READ:
-            length = min(length, max_reply)
-            with open(path, 'rb', buffering=0) as f:
-                f.seek(offset)
-                return f.readinto(area[:length]) or 0
-        raise ValueError('bad op')
+        fd = _open_regular(root / fname)
+        try:
+            if op == STAT:
+                area[:8] = struct.pack('<Q', os.fstat(fd).st_size)
+                return 8
+            if op == READ:
+                length = min(length, max_reply)
+                with open(fd, 'rb', buffering=0, closefd=False) as f:
+                    f.seek(offset)
+                    return f.readinto(area[:length]) or 0
+            raise ValueError('bad op')
+        finally:
+            os.close(fd)
     except (OSError, ValueError, struct.error, UnicodeDecodeError):
-        area[:4] = struct.pack('<I', ERR)
-        return 4
+        return 0
 
 
 def serve(name, directory, helper=None, socket_path=None, mailbox_path=None, stop_after=None):
@@ -71,46 +89,25 @@ def serve(name, directory, helper=None, socket_path=None, mailbox_path=None, sto
 
 
 def _request(client, op, offset, length, fname, timeout_s=10.0):
-    """One call with a raw payload; returns the reply length (bytes are in the reply half)."""
-    head = REQ.pack(op, offset, length) + fname.encode()
-    gen = client._load(72)
-    client.seq = (client.seq % 0xFFFFFFFF) + 1
-    client.buf[CTRL:CTRL + len(head)] = head
-    client.helper.mcdma_rpc_store_word(client.base, client.seq << 32 | len(head))
-    deadline = time.perf_counter() + timeout_s
-    while True:
-        word = client.helper.mcdma_rpc_wait_word(client.base + client.req + 64, (client.seq - 1) & 0xFFFFFFFF,
-                                                 0, 100_000, 50_000_000)
-        if word and (word >> 32) == client.seq:
-            return word & 0xFFFFFFFF
-        if client._load(72) != gen:
-            raise RuntimeError('link generation changed during the call')
-        if time.perf_counter() > deadline:
-            raise TimeoutError('no reply')
-
-
-def _is_error(client, n):
-    start = client.req + CTRL
-    return n == 4 and struct.unpack_from('<I', client.buf, start)[0] == ERR
+    """One call; returns the reply length (the bytes are at client.reply_view)."""
+    return client.raw_call(REQ.pack(op, offset, length) + fname.encode(), timeout_s)[1]
 
 
 def _stat(client, fname):
-    n = _request(client, STAT, 0, 0, fname)
-    if _is_error(client, n) or n != 8:
+    if _request(client, STAT, 0, 0, fname) != 8:
         raise SystemExit(f'{fname}: not served')
-    return struct.unpack_from('<Q', client.buf, client.req + CTRL)[0]
+    return struct.unpack_from('<Q', client.reply_view(8))[0]
 
 
 def _pull_range(client, fname, fd, first, end, errors):
-    start = client.req + CTRL
-    frame = client.rep - CTRL
+    frame = len(client.reply_view(client.rep))
     done = first
     try:
         while done < end:
             n = _request(client, READ, done, min(frame, end - done), fname)
-            if _is_error(client, n) or n == 0:
+            if n == 0:
                 raise RuntimeError(f'{fname}: read failed at {done}')
-            os.pwrite(fd, client.buf[start:start + n], done)
+            os.pwrite(fd, client.reply_view(n), done)
             done += n
     except Exception as exc:   # reported by the caller; a thread must not die silently
         errors.append(exc)
@@ -126,7 +123,7 @@ def pull(clients, fname, dest):
     if not isinstance(clients, (list, tuple)):
         clients = [clients]
     size = _stat(clients[0], fname)
-    frame = min(c.rep for c in clients) - CTRL
+    frame = min(len(c.reply_view(c.rep)) for c in clients)
     per = -(-size // len(clients))
     per = -(-per // frame) * frame or frame      # whole frames per link
     ranges = [(i * per, min(size, (i + 1) * per)) for i in range(len(clients))]
@@ -164,7 +161,12 @@ def main(argv=None):
     if args.mode == 'serve':
         print(json.dumps({'served': serve(args.name, args.directory)}))
         return 0
-    clients = [Client(n) for n in args.name.split(',')]
+    names = args.name.split(',')
+    if len(set(names)) != len(names):
+        # Protocol 1 has one caller per link: two clients on one mailbox would
+        # race on its sequence and take each other's replies.
+        raise SystemExit(f'each link may appear once: {args.name}')
+    clients = [Client(n) for n in names]
     try:
         down = [n for n, c in zip(args.name.split(','), clients) if not c.up()]
         if down:

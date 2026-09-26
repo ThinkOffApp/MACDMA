@@ -32,7 +32,7 @@ class FakeHelper:
         end = time.perf_counter() + timeout_ns / 1e9
         while time.perf_counter() < end:
             v = ctypes.c_uint64.from_address(addr).value
-            if v and (v >> 32) != last:
+            if v and (((v >> 32) == last) if mode else ((v >> 32) != last)):
                 return v
         return 0
 
@@ -41,9 +41,10 @@ class Link(threading.Thread):
     """Answers each request the way daemon + echo service would; `corrupt`
     flips a reply byte, `bump_generation` simulates a reconnect."""
 
-    def __init__(self, path, corrupt=False, bump_generation=False, silent=False):
+    def __init__(self, path, corrupt=False, bump_generation=False, silent=False, stale=False):
         super().__init__(daemon=True)
         self.path, self.corrupt, self.bump, self.silent = path, corrupt, bump_generation, silent
+        self.stale = stale   # after the first reply, only the done word moves
         self.stop = threading.Event()
 
     def run(self):
@@ -64,10 +65,11 @@ class Link(threading.Thread):
             if self.silent:
                 continue
             want, seed = rt.HEAD.unpack_from(m, rt.CTRL)
-            data = bytearray(rt.pattern(seed, want))
+            data = bytearray(rt.stamped(last, rt.pattern(seed, want)))
             if self.corrupt and data:
                 data[-1] ^= 1
-            m[HALF + rt.CTRL:HALF + rt.CTRL + want] = bytes(data)
+            if not (self.stale and last > 1):
+                m[HALF + rt.CTRL:HALF + rt.CTRL + want] = bytes(data)
             ctypes.c_uint64.from_address(base + HALF + rt.DONE_WORD).value = last << 32 | want
 
 
@@ -103,6 +105,11 @@ class RoundTrip(unittest.TestCase):
     def test_corrupt_reply_is_counted(self):
         rows = rt.run_calls(self._client(corrupt=True), [4096], calls=5, warmup=0)
         self.assertEqual(rows[0]['mismatches'], 5)
+
+    def test_stale_reply_is_caught_even_with_same_seed(self):
+        # Review of 26 Sep: identical bytes per size let a leftover reply pass.
+        rows = rt.run_calls(self._client(stale=True), [4096], calls=5, warmup=0, same_seed=True)
+        self.assertEqual(rows[0]['mismatches'], 4)   # every call after the first
 
     def test_reconnect_fails_the_call(self):
         with self.assertRaisesRegex(RuntimeError, 'generation'):

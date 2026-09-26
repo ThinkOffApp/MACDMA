@@ -4,10 +4,14 @@
 `serve NAME` runs on the listen daemon's host: it registers as the link's
 service (integrations/vllm/mcdma_kv/mailbox.py) and answers every request
 with a reply of the size the request asks for, filled with a pattern seeded
-by the request. `call NAME` runs on the connect daemon's host: it drives the
-client side of Protocol 1 (docs/link-daemon.md) directly on the connect
-daemon's shared-memory mailbox, checks every reply byte, and prints one JSON
-line per size with latency percentiles and reply throughput.
+by the request, its first 8 bytes replaced by the call's sequence number so
+a reply left over from an earlier call cannot pass. `call NAME` runs on a
+Linux connect host: it drives the client side of Protocol 1
+(docs/link-daemon.md) directly on the connect daemon's shared-memory mailbox
+(`$MCDMA_RPC_BOX_DIR`, default /dev/shm), checks every reply byte, and prints
+one JSON line per size with latency percentiles and reply throughput
+(`gbit_reply` from the mean latency). Protocol 1 allows one caller per link:
+run nothing else on the link meanwhile.
 
 A call is: request payload -> request word; wait for the done word (reply
 +64) to carry the same sequence; read the reply. A change of link
@@ -32,6 +36,13 @@ HEAD = struct.Struct('<IQ')   # reply bytes wanted, seed
 SEQ = 0xFFFFFFFF
 
 
+def stamped(seq, body):
+    """The reply the service sends for sequence `seq`: `body` with its first
+    8 bytes (or all of a shorter reply) replaced by the sequence number."""
+    tag = (seq & SEQ).to_bytes(8, 'little')[:len(body)]
+    return tag + bytes(body[len(tag):])
+
+
 def pattern(seed, n):
     """Deterministic bytes: cheap to make, and every position depends on the seed."""
     block = (seed.to_bytes(8, 'little') * 512)
@@ -52,11 +63,18 @@ def serve(name, helper=None, socket_path=None, mailbox_path=None, stop_after=Non
             if not got:
                 continue
             seq, payload = got
-            want, seed = HEAD.unpack_from(payload)
+            try:
+                want, seed = HEAD.unpack_from(payload)
+            except struct.error:          # a malformed request gets an empty reply, not a dead service
+                box.publish(seq, 0)
+                continue
             want = min(want, box.max_reply)
             if cached[:2] != (seed, want):
                 cached = (seed, want, pattern(seed, want))
-            box.reply_area()[:want] = cached[2]
+            area = box.reply_area()
+            area[:want] = cached[2]
+            tag = (seq & SEQ).to_bytes(8, 'little')[:want]
+            area[:len(tag)] = tag
             box.publish(seq, want)
             served += 1
     finally:
@@ -67,7 +85,7 @@ def serve(name, helper=None, socket_path=None, mailbox_path=None, stop_after=Non
 class Client:
     def __init__(self, name, helper=None, mailbox_path=None):
         self.helper = helper or load_helper()
-        path = mailbox_path or f'/dev/shm/mcdma-rpc.{name}'
+        path = mailbox_path or os.path.join(os.environ.get('MCDMA_RPC_BOX_DIR', '/dev/shm'), f'mcdma-rpc.{name}')
         fd = os.open(path, os.O_RDWR)
         try:
             self.map = mmap.mmap(fd, os.fstat(fd).st_size)
@@ -86,27 +104,33 @@ class Client:
     def up(self):
         return self._load(LINK_UP) == 1
 
-    def call(self, want, seed, timeout_s=5.0):
+    def raw_call(self, payload, timeout_s=5.0):
+        """Send `payload` as one request; returns (seconds, reply length) once
+        the done word carries this call's sequence. The reply's bytes are then
+        at reply_view(length)."""
         gen = self._load(GENERATION)
         self.seq = (self.seq % SEQ) + 1
-        head = HEAD.pack(want, seed)
-        self.buf[CTRL:CTRL + len(head)] = head
+        self.buf[CTRL:CTRL + len(payload)] = payload
         t0 = time.perf_counter()
-        self.helper.mcdma_rpc_store_word(self.base + REQUEST_WORD, self.seq << 32 | len(head))
+        self.helper.mcdma_rpc_store_word(self.base + REQUEST_WORD, self.seq << 32 | len(payload))
         done = self.base + self.req + DONE_WORD
         deadline = t0 + timeout_s
         while True:
-            word = self.helper.mcdma_rpc_wait_word(done, (self.seq - 1) & SEQ, 0, 100_000, 50_000_000)
+            word = self.helper.mcdma_rpc_wait_word(done, self.seq, 1, 100_000, 50_000_000)
             if word and (word >> 32) == self.seq:
-                break
+                return time.perf_counter() - t0, word & SEQ
             if self._load(GENERATION) != gen:
                 raise RuntimeError('link generation changed during the call')
             if time.perf_counter() > deadline:
                 raise TimeoutError(f'no reply to sequence {self.seq}')
-        elapsed = time.perf_counter() - t0
-        n = word & SEQ
-        got = bytes(self.buf[self.req + CTRL:self.req + CTRL + n])
-        return elapsed, n, got
+
+    def reply_view(self, n):
+        start = self.req + CTRL
+        return self.buf[start:start + n]
+
+    def call(self, want, seed, timeout_s=5.0):
+        elapsed, n = self.raw_call(HEAD.pack(want, seed), timeout_s)
+        return elapsed, n, bytes(self.reply_view(n))
 
     def close(self):
         self.buf.release()
@@ -128,7 +152,7 @@ def run_calls(client, sizes, calls, warmup, same_seed=False):
             secs, n, got = client.call(size, seed)
             if seed not in expect:
                 expect = {seed: pattern(seed, size)}
-            if n != size or got != expect[seed]:
+            if n != size or got != stamped(client.seq, expect[seed]):
                 bad += 1
             if i >= warmup:
                 lat.append(secs)
