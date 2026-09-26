@@ -28,6 +28,7 @@ benchmarks/rpc_file.py: no per-transfer setup (see link-daemon.md).
 import argparse
 import csv
 import hashlib
+import ipaddress
 import json
 import math
 from pathlib import Path
@@ -144,7 +145,7 @@ def tcp_transfer(src, dst, name, dst_ip, port):
         ' b=c.recv(1<<22)\n'
         ' if not b: break\n'
         ' t0=t0 or time.perf_counter();n+=len(b);f.write(b)\n'
-        'f.close();print(n,time.perf_counter()-t0)') + ' ' + shlex.quote(dst.path(name)))
+        'f.close();print(n,(time.perf_counter()-t0) if t0 else 0.0)') + ' ' + shlex.quote(dst.path(name)))
     send = ('python3 -c ' + shlex.quote(
         'import socket,sys\n'
         f'c=socket.create_connection(("{dst_ip}",{port}));f=open(sys.argv[1],"rb")\n'
@@ -237,6 +238,12 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not 4096 <= args.request <= MAX_REQUEST:
         p.error('--request must be 4 KiB to 16 MiB')
+    try:
+        ipaddress.ip_address(args.dst_ip)
+    except ValueError:
+        p.error('--dst-ip must be an IP address')
+    if args.src_host.startswith('-') or args.dst_host.startswith('-'):
+        p.error('SSH destinations may not start with "-"')
     arms = args.arms.split(',')
     if not arms or set(arms) - {'rdma', 'tcp', 'link'}:
         p.error('--arms takes rdma, tcp and link')

@@ -96,6 +96,18 @@ class LinkArm(unittest.TestCase):
         self.assertIn('/opt/mcdma/benchmarks/rpc_file.py pull kv0 kvh-2048.bin /dev/shm/kv/kvh-2048.bin', text)
         self.assertNotIn('run_bw.py', text)
 
+    def test_bad_ip_and_dash_host_refused(self):
+        for extra in (['--dst-ip', '1.2.3.4",0);import os;os.system("x'], ):
+            argv = self._argv()
+            i = argv.index('--dst-ip')
+            argv[i + 1] = extra[1]
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                kvh.main(argv)
+        argv = self._argv()
+        argv[argv.index('--src-host') + 1] = '-oProxyCommand=x'
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            kvh.main(argv)
+
     def test_link_arm_requires_its_settings(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             kvh.main(self._argv('--arms', 'link'))

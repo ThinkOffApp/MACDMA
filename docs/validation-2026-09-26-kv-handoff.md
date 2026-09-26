@@ -21,9 +21,18 @@ both ends. RoCE v2 over IPv4-mapped GIDs. mcdma-bw runs used RDMA path MTU 1024;
 
 Each round: the producer prefills N-1 tokens and saves the slot; the file crosses once per transport, in rotating
 order; after each crossing both ends' SHA-256 are compared, the consumer erases its slot, restores the file and
-completes all N tokens with 64 greedy tokens. Wire time is the transport's own data loop (mcdma-bw: initiator
-data loop summed over chunks; TCP: receiver, first byte to EOF; `mcdma-rpcd`: the consumer's pull loop). Wall
-time is the whole transfer step as the orchestrator saw it, including SSH.
+completes all N tokens with 64 greedy tokens. Host A's locked-memory limit was raised from 8 MiB (the Linux pair
+report) to unlimited before these runs.
+
+The wire boundaries differ by transport, so wire times compare only roughly:
+
+- mcdma-bw: the initiator's data loop from the resident source buffer into the peer's registered buffer, summed
+  over chunks. It excludes reading the file into the buffer and writing the dump.
+- TCP: the receiver, from its first byte to EOF, including its writes to tmpfs. The sender uses `sendfile`.
+- `mcdma-rpcd`: the consumer's pull loop, including the service's read of each frame from tmpfs into the mailbox
+  and the consumer's write of it to tmpfs.
+
+Wall time is the whole transfer step as the orchestrator saw it, including SSH, and is the comparable figure.
 
 ## Results
 
@@ -57,11 +66,16 @@ For the same prompt the consumer alone took 37.4-38.4 s to prefill (15:19 and 15
 - **A persistent link removes that setup, and a single link runs in series.** Protocol 1 carries one call per
   link at a time, so each 16 MiB frame was read from the producer's file, sent and written on the consumer
   strictly in turn: 12 Gbit/s. Two links pulling halves concurrently overlapped the copies with the wire:
-  19-22 Gbit/s and the only arm faster than TCP end to end, by about 1.7x on wall time.
-- **Echo round trips on the same link** (`rpc_roundtrip.py`, 1000 calls a size, 0 mismatches): 11.1 us median
-  for 64 B at path MTU 1024; at path MTU 4096 with a cached reply, 1.29 ms for 4 MiB (26.0 Gbit/s) and 3.82 ms
-  for 12 MiB (26.3 Gbit/s). Two things changed between those runs (path MTU and the cached reply), so the
-  improvement from the first run's 9.6 Gbit/s is not attributed to either alone.
+  19-22 Gbit/s and the only arm faster than TCP end to end: 0.54-0.76 s wall against 1.04-1.12 s for the TCP arm
+  of the same run (about 1.7x). That TCP arm ran during the download described above. Against the unloaded TCP
+  arms of the 15:19 and 15:34 runs (medians 0.85 and 0.92 s) the two-link median of 0.62 s is about 1.4x faster,
+  and the two-link arm itself ran under the download.
+- **Echo round trips on the same link** (`rpc_roundtrip.py`, 1000 calls a size, 0 mismatches; throughput from the
+  mean latency): 11.1 us median for 64 B at path MTU 1024; at path MTU 4096 with a cached reply, 1.29 ms median
+  for 4 MiB (26.0 Gbit/s) and 3.82 ms for 12 MiB (26.3 Gbit/s). Two things changed between those runs (path MTU
+  and the cached reply), so the improvement from the first run's 9.6 Gbit/s is not attributed to either alone.
+  The cached-reply run sent the same bytes for every call of a size, so it could not have detected a stale reply;
+  the service now stamps each reply with its call's sequence number, and that run was not repeated.
 - **The handoff is byte-correct; the decoded text differs across backends.** The consumer's 64 tokens never
   equalled the producer's own continuation or the consumer's own full prefill. A same-host control on the
   producer (save, erase, restore, decode, against its own full prefill, a 2526-token varied prompt) matched
