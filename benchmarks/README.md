@@ -43,7 +43,18 @@ Drop `--dry-run` to run it. `--mac-provider`, `--mac-checker` and the
 `--mac-cq-map`, `--mac-user-post` and `--mac-user-bf` modes do not apply and
 are rejected. The command runs with no `env IBV_DRIVERS` or `MCDMA_*` prefix,
 and `--mac-gid-index` defaults to 1. Preflight gives both hosts the same
-check: the GID index must be RoCE v2 on the named interface, binaries are
-hashed with `sha256sum`, and each host needs the other's static IPv6
-neighbour (`ip -6 neigh`). The manifest records `mac_platform`, and a
+check: the GID index must be RoCE v2 on the named interface, and binaries are
+hashed with `sha256sum`. The manifest records `mac_platform`, and a
 `MCDMA_*` provider marker on the first host fails the run.
+
+The tested Linux path is RoCE v2 over IPv4 addresses. Give each RDMA port an
+IPv4 address on a shared subnet and pass, for each host, the index of the
+RoCE v2 GID that reads `::ffff:<that port's IPv4 address>` (see
+`/sys/class/infiniband/<device>/ports/1/gids` and `gid_attrs/types`). Both
+hosts must then hold an ARP entry with a link-layer address for the other
+(`ip -4 neigh show to <address> dev <interface>`; REACHABLE, STALE, DELAY,
+PROBE or PERMANENT). Ping the other port once if the entry is missing. On
+the one Linux pair tested so far, RoCE v2 over the MAC-derived link-local
+GID failed at "modify QP to RTR". Link-local GIDs are still accepted, with
+the static IPv6 neighbour check (`ip -6 neigh`), but have not connected on
+that pair. Both hosts must use the same GID kind.

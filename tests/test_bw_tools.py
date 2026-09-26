@@ -335,6 +335,106 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(relay.rows[mac], [])
 
 
+V4_GIDS = {'linux-a': '::ffff:192.0.2.20', 'linux-b': '::ffff:192.0.2.11',
+           'mac-test': '::ffff:192.0.2.20', 'linux-test': '::ffff:192.0.2.11'}
+ARP_ROWS = {'192.0.2.11': '192.0.2.11 lladdr 02:00:00:00:00:0b STALE',
+            '192.0.2.20': '192.0.2.20 lladdr 02:00:00:00:00:14 REACHABLE'}
+
+
+class IPv4MappedGidTests(unittest.TestCase):
+    GOOD = ('ENDPOINT v=1 nonce=7 role=initiator op=write bytes=65536 depth=16 qps=1 cqpq=0 cqe=31 total=67108864 '
+            'mtu=1024 imm_recv=0 rd=1 psn=1 rkey=4660 addr=4294967296 length=2113536 gid=::ffff:192.0.2.11 qpn=17')
+
+    def test_descriptor_accepts_ipv4_mapped_only_when_asked(self):
+        fields, mac = run_bw.descriptor(self.GOOD, ipv4_mapped=True)
+        self.assertEqual((fields['gid'], mac), ('::ffff:192.0.2.11', None))
+        with self.assertRaisesRegex(ValueError, 'MAC-derived link-local'):
+            run_bw.descriptor(self.GOOD)
+        link_local = self.GOOD.replace('::ffff:192.0.2.11', 'fe80::ff:fe00:1')
+        self.assertEqual(run_bw.descriptor(link_local, ipv4_mapped=True)[1], '02:00:00:00:00:01')
+        for bad in ('::ffff:224.0.0.1', '::ffff:0.0.0.0', '::ffff:127.0.0.1', '::ffff:255.255.255.255', '2001:db8::1'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                run_bw.descriptor(self.GOOD.replace('::ffff:192.0.2.11', bad), ipv4_mapped=True)
+
+    def test_ipv4_neighbour_needs_a_resolved_row(self):
+        seen = []
+
+        def run_with(output):
+            def run(host, command):
+                seen.append((host, command))
+                return output
+            return run
+
+        for state in ('REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT'):
+            with self.subTest(state=state):
+                self.assertTrue(run_bw.linux_has_ipv4_neighbour(
+                    run_with(f'192.0.2.11 lladdr 02:00:00:00:00:0b {state}'), 'linux-a', '192.0.2.11', 'enp8s0'))
+        self.assertEqual(seen[0], ('linux-a', ['ip', '-4', 'neigh', 'show', 'to', '192.0.2.11', 'dev', 'enp8s0']))
+        for output in ('', '192.0.2.11 FAILED', '192.0.2.11 INCOMPLETE', '192.0.2.12 lladdr 02:00:00:00:00:0b STALE',
+                       '192.0.2.11 lladdr (incomplete) STALE', '192.0.2.11 lladdr 02:00:00:00:00:0b NOARP'):
+            with self.subTest(output=output):
+                self.assertFalse(run_bw.linux_has_ipv4_neighbour(run_with(output), 'linux-a', '192.0.2.11', 'enp8s0'))
+
+    def sweep_with_fake_hosts(self, argv, gids, arp=ARP_ROWS):
+        """Runs main() end to end: fake SSH commands, FAKE_ENDPOINT processes."""
+        popen = run_bw.subprocess.Popen
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            remote = command[-1]
+            if '/types/' in remote:
+                out = 'RoCE v2'
+            elif '/ndevs/' in remote:
+                out = {'linux-a': 'enp8s0', 'linux-b': 'enp9s0', 'linux-test': 'enp9s0'}.get(command[-2], '')
+            elif remote.startswith(('sha256sum ', 'shasum ')):
+                out = 'a' * 64 + '  x'
+            elif remote.startswith('ip -4 neigh'):
+                out = arp.get(remote.split()[5], '')
+            else:
+                out = ''
+            return run_bw.subprocess.CompletedProcess(command, 0, out + '\n', '')
+
+        def fake_popen(command, **kwargs):
+            host, remote = command[-2], command[-1]
+            role = remote.split('--role ')[1].split()[0]
+            return popen([os.sys.executable, '-u', '-c', FAKE_ENDPOINT, role, gids[host]], **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'sweep'
+            with patch.object(run_bw.subprocess, 'run', side_effect=fake_run), \
+                    patch.object(run_bw.cross.subprocess, 'Popen', side_effect=fake_popen), \
+                    patch('sys.stdout', io.StringIO()):
+                code = run_bw.main(argv + ['--ops', 'write', '--sizes', '65536', '--depths', '16', '--initiators', 'mac',
+                                           '--repeats', '1', '--output', str(output)])
+            manifest = run_bw.json.loads((output / 'manifest.json').read_text())
+        return code, manifest, [command[-1] for command in calls]
+
+    def test_linux_pair_runs_over_ipv4_mapped_gids(self):
+        code, manifest, remotes = self.sweep_with_fake_hosts(LINUX_ARGS, V4_GIDS)
+        self.assertEqual(manifest['runs'][0]['errors'], [])
+        self.assertEqual(code, 0)
+        self.assertIn('ip -4 neigh show to 192.0.2.11 dev enp8s0', remotes)
+        self.assertIn('ip -4 neigh show to 192.0.2.20 dev enp9s0', remotes)
+        self.assertFalse(any(r.startswith(('ip -6', 'ndp')) for r in remotes))
+
+    def test_linux_pair_refuses_missing_arp_entry(self):
+        arp = dict(ARP_ROWS, **{'192.0.2.20': '192.0.2.20 FAILED'})
+        code, manifest, _ = self.sweep_with_fake_hosts(LINUX_ARGS, V4_GIDS, arp)
+        self.assertEqual(code, 1)
+        self.assertTrue(any('no ARP entry for 192.0.2.20' in e for e in manifest['runs'][0]['errors']))
+
+    def test_linux_pair_refuses_mixed_gid_kinds(self):
+        code, manifest, _ = self.sweep_with_fake_hosts(LINUX_ARGS, dict(V4_GIDS, **{'linux-a': 'fe80::ff:fe00:14'}))
+        self.assertEqual(code, 1)
+        self.assertTrue(any('both use IPv4-mapped' in e for e in manifest['runs'][0]['errors']))
+
+    def test_macos_pair_still_rejects_ipv4_mapped_gids(self):
+        code, manifest, remotes = self.sweep_with_fake_hosts(BASE_ARGS, V4_GIDS)
+        self.assertEqual(code, 1)
+        self.assertTrue(any('MAC-derived link-local' in e for e in manifest['runs'][0]['errors']))
+        self.assertFalse(any(r.startswith('ip -4') for r in remotes))
+
 class SummaryTests(unittest.TestCase):
     def write(self, directory, name, rows):
         path = Path(directory) / name

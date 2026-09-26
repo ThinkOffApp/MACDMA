@@ -109,8 +109,10 @@ def ssh_line(host, command):
     return shlex.join(SSH + [host, shlex.join(command)])
 
 
-def descriptor(payload):
-    """Validate an ENDPOINT payload; returns (fields, mac_address)."""
+def descriptor(payload, ipv4_mapped=False):
+    """Validate an ENDPOINT payload; returns (fields, mac_address). With
+    ipv4_mapped (Linux pairs only) a ::ffff:a.b.c.d RoCE v2 GID is also
+    accepted; its mac_address is None because ARP, not the GID, supplies it."""
     words = payload.split()
     if not words or words[0] != 'ENDPOINT':
         raise ValueError('Missing bandwidth endpoint')
@@ -136,6 +138,11 @@ def descriptor(payload):
             any(not re.fullmatch(r'[0-9]+', q) or not 0 < int(q) <= 0xffffff for q in qpns)):
         raise ValueError('Invalid endpoint bounds')
     gid = ipaddress.IPv6Address(fields['gid'])
+    if ipv4_mapped and gid.ipv4_mapped is not None:
+        ipv4 = gid.ipv4_mapped
+        if ipv4.is_multicast or ipv4.is_unspecified or ipv4.is_loopback or ipv4.is_reserved:
+            raise ValueError('Expected a unicast IPv4-mapped GID')
+        return fields, None
     raw = gid.packed
     if not gid.is_link_local or raw[11:13] != b'\xff\xfe':
         raise ValueError('Expected a MAC-derived link-local GID')
@@ -196,6 +203,20 @@ def check_linux_gid(run, host, device, gid_index, interface):
 
 def linux_has_neighbour(run, host, gid, interface, address):
     return 'lladdr ' + address in run(host, ['ip', '-6', 'neigh', 'show', 'to', gid, 'dev', interface]).lower()
+
+
+ARP_STATES = ('REACHABLE', 'STALE', 'DELAY', 'PROBE', 'PERMANENT')
+
+
+def linux_has_ipv4_neighbour(run, host, ipv4, interface):
+    """An IPv4-mapped RoCE v2 GID resolves through ARP, so any entry with a
+    link-layer address counts; FAILED and INCOMPLETE rows carry none."""
+    for line in run(host, ['ip', '-4', 'neigh', 'show', 'to', ipv4, 'dev', interface]).splitlines():
+        words = line.split()
+        if (len(words) >= 4 and words[0] == ipv4 and 'lladdr' in words[:-1] and words[-1].upper() in ARP_STATES and
+                re.fullmatch(r'[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}', words[words.index('lladdr') + 1])):
+            return True
+    return False
 
 
 class Relay:
@@ -406,10 +427,20 @@ def main(argv=None):
     def check_endpoints(held):
         gids = {}
         for endpoint, payload in held.items():
-            fields, mac_address = descriptor(payload)
+            fields, mac_address = descriptor(payload, ipv4_mapped=linux)
             gids[endpoint.host] = (fields['gid'], mac_address)
         mac_gid, mac_address = gids[args.mac_host]
         peer_gid, peer_address = gids[args.peer_host]
+        if (mac_address is None) != (peer_address is None):
+            raise RuntimeError('Endpoints must both use IPv4-mapped or both use link-local GIDs')
+        if mac_address is None:
+            mac_ipv4 = str(ipaddress.IPv6Address(mac_gid).ipv4_mapped)
+            peer_ipv4 = str(ipaddress.IPv6Address(peer_gid).ipv4_mapped)
+            if not linux_has_ipv4_neighbour(run, args.mac_host, peer_ipv4, args.mac_interface):
+                raise RuntimeError(f'Mac-side Linux host has no ARP entry for {peer_ipv4}; ping it over the RDMA port first')
+            if not linux_has_ipv4_neighbour(run, args.peer_host, mac_ipv4, args.peer_interface):
+                raise RuntimeError(f'Linux peer has no ARP entry for {mac_ipv4}; ping it over the RDMA port first')
+            return
         if linux:
             if not linux_has_neighbour(run, args.mac_host, peer_gid, args.mac_interface, peer_address):
                 raise RuntimeError('Mac-side Linux host needs the peer static IPv6 neighbour before QP connection')
