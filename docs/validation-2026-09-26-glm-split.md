@@ -17,14 +17,15 @@ split layer by layer, rather than for moving a whole cache.
   ConnectX-7, 100 Gb/s, netdev MTU 9000, RoCE v2 active MTU 4096.
 - TCP rows: `GGML_RPC_NO_RDMA=1` on both ends. RDMA rows: default; the client log records `RDMA activated ...
   mtu=4096`.
-- `-ngl 99 -fa 1`. `ts` is the layer split host A / host B. Values are llama-bench's mean and deviation over two
-  repetitions per row.
+- `-ngl 99 -fa 1`. `ts` is the layer split host A / host B. Values are llama-bench's mean and deviation: two
+  repetitions per row (`-r 2`) except the final-settings table, which used three (`-r 3`). The 50/50 TCP rows are
+  llama.cpp's default split with no `-ts` (about 50.2/49.8, set by free memory); every other split was set explicitly.
 
 ## RDMA against TCP, same settings
 
 | Split A/B | Transport | pp512 (t/s) | tg128 (t/s) |
 |---|---|---:|---:|
-| 50/50 | TCP | 213.97 ± 3.65 | 13.44 ± 0.08 |
+| 50/50 (default) | TCP | 213.97 ± 3.65 | 13.44 ± 0.08 |
 | 50/50 | RDMA | 212.79 ± 6.15 | 13.85 ± 0.03 |
 | 75/25 | TCP | 254.85 ± 0.41 | 12.81 ± 0.00 |
 | 75/25 | RDMA | 255.97 ± 1.46 | 13.47 ± 0.01 |
@@ -41,7 +42,7 @@ same over both transports (426 and 430 t/s pp512, 11.1 and 11.2 t/s generation).
 | 25/75 | 171.39 ± 2.62 | 12.00 ± 0.01 |
 | 30/70 | 183.14 ± 5.54 | 12.31 ± 0.18 |
 | 40/60 | 201.40 ± 5.47 | 13.01 ± 0.04 |
-| 50/50 | 213.97 ± 3.65 | 13.44 ± 0.08 |
+| 50/50 (default) | 213.97 ± 3.65 | 13.44 ± 0.08 |
 | 60/40 | 233.55 ± 0.16 | 13.26 ± 0.01 |
 | 70/30 | 245.76 ± 0.52 | 12.90 ± 0.00 |
 | 75/25 | 254.85 ± 0.41 | 12.81 ± 0.00 |
@@ -53,7 +54,7 @@ A's share; generation peaked at 50/50.
 
 `-ub` at 50/50, pp2048: 512 gave 263.41 ± 1.32, 1024 gave 299.10 ± 1.01, 2048 gave 257.84 ± 1.26 t/s.
 
-| Split A/B, ub 1024 | pp2048 (t/s) | tg128 (t/s) |
+| Split A/B, ub 1024, `-r 3` | pp2048 (t/s) | tg128 (t/s) |
 |---|---:|---:|
 | 50/50 | 299.06 ± 0.45 | 13.77 ± 0.04 |
 | 60/40 | 351.47 ± 2.68 | 13.89 ± 0.01 |
@@ -64,5 +65,5 @@ row for row, and none of them has a TCP counterpart. They show the best settings
 
 ## Not covered
 
-More than two repetitions, TCP at the final settings, other models or quantisations, concurrent requests, and output
+More than two or three repetitions, TCP at the final settings, other models or quantisations, concurrent requests, and output
 comparison between transports beyond a coherent temperature-0 answer.
