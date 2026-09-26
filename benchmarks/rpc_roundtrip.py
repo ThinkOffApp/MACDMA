@@ -42,6 +42,10 @@ def pattern(seed, n):
 def serve(name, helper=None, socket_path=None, mailbox_path=None, stop_after=None):
     box = ServiceMailbox(name, socket_path=socket_path, mailbox_path=mailbox_path, helper=helper)
     served = 0
+    # The last reply is kept: with --same-seed calls the service only copies,
+    # so large-reply timings measure the link, not Python building 4 MiB of
+    # pattern inside every round trip (the first hardware run, 9.5 Gb/s).
+    cached = (None, None, b'')
     try:
         while box.alive and (stop_after is None or served < stop_after):
             got = box.next_request(1.0)
@@ -50,7 +54,9 @@ def serve(name, helper=None, socket_path=None, mailbox_path=None, stop_after=Non
             seq, payload = got
             want, seed = HEAD.unpack_from(payload)
             want = min(want, box.max_reply)
-            box.reply_area()[:want] = pattern(seed, want)
+            if cached[:2] != (seed, want):
+                cached = (seed, want, pattern(seed, want))
+            box.reply_area()[:want] = cached[2]
             box.publish(seq, want)
             served += 1
     finally:
@@ -112,14 +118,17 @@ def percentile(values, q):
     return s[min(len(s) - 1, int(round(q * (len(s) - 1))))]
 
 
-def run_calls(client, sizes, calls, warmup):
+def run_calls(client, sizes, calls, warmup, same_seed=False):
     results = []
     for size in sizes:
         lat, bad = [], 0
+        expect = {}
         for i in range(warmup + calls):
-            seed = zlib.crc32(struct.pack('<QQ', size, i))
+            seed = zlib.crc32(struct.pack('<QQ', size, 0 if same_seed else i))
             secs, n, got = client.call(size, seed)
-            if n != size or got != pattern(seed, size):
+            if seed not in expect:
+                expect = {seed: pattern(seed, size)}
+            if n != size or got != expect[seed]:
                 bad += 1
             if i >= warmup:
                 lat.append(secs)
@@ -127,7 +136,8 @@ def run_calls(client, sizes, calls, warmup):
                         'p50_us': round(percentile(lat, 0.5) * 1e6, 1),
                         'p99_us': round(percentile(lat, 0.99) * 1e6, 1),
                         'max_us': round(max(lat) * 1e6, 1),
-                        'gbit_reply': round(size * 8 * len(lat) / sum(lat) / 1e9, 3)})
+                        'gbit_reply': round(size * 8 * len(lat) / sum(lat) / 1e9, 3),
+                        'same_seed': same_seed})
     return results
 
 
@@ -141,6 +151,8 @@ def main(argv=None):
     c.add_argument('--sizes', default='64,4096,65536,1048576,4194304', help='reply sizes in bytes')
     c.add_argument('--calls', type=int, default=1000)
     c.add_argument('--warmup', type=int, default=20)
+    c.add_argument('--same-seed', action='store_true',
+                   help='one reply pattern per size, so the service only copies (transport-bound timing)')
     args = p.parse_args(argv)
     if args.mode == 'serve':
         print(json.dumps({'served': serve(args.name)}))
@@ -154,7 +166,7 @@ def main(argv=None):
         if too_big:
             raise SystemExit(f'sizes {too_big} exceed the reply half ({client.rep - CTRL} bytes)')
         bad = 0
-        for row in run_calls(client, sizes, args.calls, args.warmup):
+        for row in run_calls(client, sizes, args.calls, args.warmup, args.same_seed):
             bad += row['mismatches']
             print(json.dumps(row), flush=True)
     finally:

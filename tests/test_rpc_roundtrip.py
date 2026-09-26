@@ -95,6 +95,11 @@ class RoundTrip(unittest.TestCase):
         self.assertEqual([r['mismatches'] for r in rows], [0, 0, 0])
         self.assertEqual([r['reply_bytes'] for r in rows], [64, 4096, 65536])
 
+    def test_same_seed_still_checks_every_reply(self):
+        rows = rt.run_calls(self._client(corrupt=True), [4096], calls=5, warmup=0, same_seed=True)
+        self.assertEqual(rows[0]['mismatches'], 5)
+        self.assertTrue(rows[0]['same_seed'])
+
     def test_corrupt_reply_is_counted(self):
         rows = rt.run_calls(self._client(corrupt=True), [4096], calls=5, warmup=0)
         self.assertEqual(rows[0]['mismatches'], 5)
