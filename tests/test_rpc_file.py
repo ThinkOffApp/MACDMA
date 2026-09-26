@@ -83,6 +83,30 @@ class Pull(unittest.TestCase):
         self.assertEqual(r['bytes'], len(self.data))
         self.assertEqual(hashlib.sha256(dest.read_bytes()).digest(), hashlib.sha256(self.data).digest())
 
+    def test_two_links_pull_ranges_concurrently_and_exactly(self):
+        box2 = self.root / 'box2'
+        box2.write_bytes(self.box.read_bytes())
+        clients = [self._client()]
+        link = FileLink(str(box2), self.served.resolve())
+        link.start()
+        self.addCleanup(link.stop.set)
+        c2 = rf.Client('y', helper=FakeHelper(), mailbox_path=str(box2))
+        self.addCleanup(c2.close)
+        clients.append(c2)
+        dest = self.root / 'out2.bin'
+        r = rf.pull(clients, 'kvh-8192.bin', dest)
+        self.assertEqual(r['links'], 2)
+        self.assertEqual(dest.read_bytes(), self.data)
+
+    def test_failed_range_is_reported(self):
+        c = self._client()
+        (self.served / 'kvh-8192.bin').write_bytes(self.data[:100])   # shrinks after STAT would see it
+        with self.assertRaises(SystemExit):
+            errors = []
+            rf._pull_range(c, 'kvh-8192.bin', os.open(self.root / 'o3', os.O_WRONLY | os.O_CREAT), 100, 5000, errors)
+            if errors:
+                raise SystemExit(str(errors[0]))
+
     def test_corruption_shows_in_the_hash(self):
         dest = self.root / 'out.bin'
         rf.pull(self._client(flip=True), 'kvh-8192.bin', dest)
